@@ -352,7 +352,7 @@ Now produce your analysis. Be thorough, specific, and reference actual file path
             await update_status("Drafting Strategic Report (Claude)...")
             client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
             message = await client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-sonnet-4-6",
                 max_tokens=4096,
                 temperature=0.3,
                 system="You are a senior technical discovery agent. Provide deep, structured analysis.",

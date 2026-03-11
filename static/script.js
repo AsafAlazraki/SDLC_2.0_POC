@@ -6,7 +6,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // ─────────────────────────────────────────
     const state = {
         geminiKey: localStorage.getItem('gemini_api_key') || '',
-        anthropicKey: localStorage.getItem('anthropic_api_key') || '',
         activeClient: null,
         personaConfigs: {}
     };
@@ -34,9 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Anthropic Status
             const anthropicStatus = document.getElementById('anthropic-status');
             if (anthropicStatus) {
-                if (state.anthropicKey) {
-                    anthropicStatus.innerHTML = '<span class="status-badge success">PASTED</span>';
-                } else if (config.has_anthropic_env_key) {
+                if (config.has_anthropic_env_key) {
                     anthropicStatus.innerHTML = '<span class="status-badge env">ENV SET</span>';
                 } else {
                     anthropicStatus.innerHTML = '<span class="status-badge error">MISSING</span>';
@@ -120,16 +117,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    const anthropicInput = document.getElementById('anthropic-key');
-    if (anthropicInput) {
-        anthropicInput.value = state.anthropicKey;
-        anthropicInput.addEventListener('input', (e) => {
-            state.anthropicKey = e.target.value;
-            localStorage.setItem('anthropic_api_key', e.target.value);
-            updateAPIStatus();
-        });
-    }
-
     // Modal Closing
     const modal = document.getElementById('persona-modal');
     const closeBtn = document.getElementById('close-modal-btn');
@@ -153,7 +140,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('modal-expectations').innerText = config.output_expectations || "Structured analysis results with clear actionable insights.";
         
         const modelBadge = document.getElementById('modal-model');
-        modelBadge.innerText = config.model === 'anthropic' ? 'Claude 3.5 Sonnet' : 'Gemini 2.0 Flash';
+        modelBadge.innerText = config.model === 'anthropic' ? 'Claude Sonnet 4.6' : 'Gemini 2.0 Flash';
         modelBadge.className = `status-badge ${config.model === 'anthropic' ? 'success' : 'env'}`;
 
         modal.style.display = 'flex';
@@ -191,7 +178,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify({
                     github_url: githubUrl,
                     gemini_api_key: state.geminiKey,
-                    anthropic_api_key: state.anthropicKey,
                     client_id: state.activeClient || null
                 })
             });
@@ -488,6 +474,28 @@ document.addEventListener('DOMContentLoaded', () => {
         return `<div class="markdown-body">${html}</div>`;
     }
 
+    async function renderMermaidDiagram(chartDef) {
+        const wrapper = document.getElementById('mermaid-wrapper');
+        const output = document.getElementById('mermaid-output');
+        if (!wrapper || !output) return;
+
+        try {
+            const mermaid = window.mermaid;
+            if (!mermaid) return;
+
+            output.innerHTML = '';
+            wrapper.style.display = 'block';
+
+            const id = 'mermaid-graph-' + Date.now();
+            const { svg } = await mermaid.render(id, chartDef);
+            output.innerHTML = svg;
+        } catch (err) {
+            console.warn('Mermaid render error:', err);
+            const wrapper = document.getElementById('mermaid-wrapper');
+            if (wrapper) wrapper.style.display = 'none';
+        }
+    }
+
     function extractAndRenderMermaid(content) {
         // Find mermaid block
         const mermaidMatch = content.match(/```mermaid\n([\s\S]*?)```/);
@@ -521,6 +529,81 @@ document.addEventListener('DOMContentLoaded', () => {
         const mermaidWrapper = document.getElementById('mermaid-wrapper');
         if (mermaidWrapper) mermaidWrapper.style.display = 'none';
     }
+
+    // ─────────────────────────────────────────
+    // Collapse / Expand All
+    // ─────────────────────────────────────────
+    document.getElementById('collapse-all-btn')?.addEventListener('click', () => {
+        document.querySelectorAll('.report-card').forEach(card => {
+            if (card.style.display !== 'none') card.classList.add('collapsed');
+        });
+    });
+
+    document.getElementById('expand-all-btn')?.addEventListener('click', () => {
+        document.querySelectorAll('.report-card').forEach(card => {
+            card.classList.remove('collapsed');
+        });
+    });
+
+    // ─────────────────────────────────────────
+    // Admin: Create Client & Persona
+    // ─────────────────────────────────────────
+    document.getElementById('create-client-btn')?.addEventListener('click', async () => {
+        const nameInput = document.getElementById('new-client-name');
+        const descInput = document.getElementById('new-client-desc');
+        const name = nameInput?.value.trim();
+        const description = descInput?.value.trim();
+
+        if (!name) { alert('Client name is required.'); return; }
+
+        try {
+            const res = await fetch('/api/clients', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, description })
+            });
+            if (res.ok) {
+                nameInput.value = '';
+                descInput.value = '';
+                await loadClients();
+                alert(`Client "${name}" created successfully.`);
+            } else {
+                const err = await res.json();
+                alert(`Error: ${err.detail || 'Could not create client.'}`);
+            }
+        } catch (e) {
+            console.error('Create client error', e);
+            alert('Network error creating client.');
+        }
+    });
+
+    document.getElementById('create-persona-btn')?.addEventListener('click', async () => {
+        const roleInput = document.getElementById('new-persona-model');
+        const promptInput = document.getElementById('new-persona-prompt');
+        const role_name = roleInput?.value.trim();
+        const system_prompt = promptInput?.value.trim();
+
+        if (!role_name || !system_prompt) { alert('Role name and system prompt are required.'); return; }
+
+        try {
+            const res = await fetch('/api/personas', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ role_name, system_prompt })
+            });
+            if (res.ok) {
+                roleInput.value = '';
+                promptInput.value = '';
+                alert(`Persona "${role_name}" created successfully.`);
+            } else {
+                const err = await res.json();
+                alert(`Error: ${err.detail || 'Could not create persona.'}`);
+            }
+        } catch (e) {
+            console.error('Create persona error', e);
+            alert('Network error creating persona.');
+        }
+    });
 
     // ─────────────────────────────────────────
     // Legacy File/Text Analysis (Keep for Compatibility)
