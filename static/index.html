@@ -40,10 +40,6 @@
                     <label for="gemini-key">Gemini API Key</label>
                     <input type="password" id="gemini-key" placeholder="Enter Gemini Key...">
                 </div>
-                <div class="input-group">
-                    <label for="anthropic-key">Anthropic API Key</label>
-                    <input type="password" id="anthropic-key" placeholder="Enter Anthropic Key...">
-                </div>
         </aside>
 
         <!-- Main Content Area -->
@@ -222,6 +218,13 @@
                             </div>
                             <div id="compliance-content" class="report-content"></div>
                         </div>
+
+                        <div class="glass-card full-width report-card" id="report-secops" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">🛡️ DevSecOps</span>
+                            </div>
+                            <div id="secops-content" class="report-content"></div>
+                        </div>
                     </div>
                 </section>
 
@@ -264,7 +267,7 @@
                             <div class="explainer-step">
                                 <div class="step-icon">🤖</div>
                                 <h5>2. Fleet Dispatch</h5>
-                                <p>We launch a fleet of 11+ specialized AI personas. Each agent is a distinct instance of either **Claude 3.5 Sonnet** (for complex logic/strategy) or **Gemini 1.5/2.0** (for deep research and grounding).</p>
+                                <p>We launch a fleet of 11+ specialized AI personas. Each agent is a distinct instance of either **Claude Sonnet 4.6** (for complex logic/strategy) or **Gemini 2.0 Flash** (for deep research and grounding).</p>
                             </div>
                             <div class="explainer-step">
                                 <div class="step-icon">🔍</div>
@@ -281,7 +284,7 @@
                         <div class="tech-stack-showcase mt-5">
                             <h4>Hybrid Intelligence Model</h4>
                             <div class="stack-badges" style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 15px;">
-                                <span class="status-pill env">Claude 3.5 Sonnet</span>
+                                <span class="status-pill env">Claude Sonnet 4.6</span>
                                 <span class="status-pill env">Gemini 2.0 Flash</span>
                                 <span class="status-pill success">Google Search Grounding</span>
                                 <span class="status-pill success">Mermaid Diagrams</span>

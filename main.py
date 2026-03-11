@@ -4,16 +4,11 @@ import asyncio
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-print(f"DEBUG: Loading .env from {os.getcwd()}")
 load_dotenv(override=True)
 
 # Read API keys from environment
 ENV_GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 ENV_ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-print(f"DEBUG: ENV_GEMINI_KEY exists: {bool(ENV_GEMINI_KEY)}")
-print(f"DEBUG: ENV_ANTHROPIC_KEY exists: {bool(ENV_ANTHROPIC_KEY)}")
-if ENV_GEMINI_KEY:
-    print(f"DEBUG: ENV_GEMINI_KEY start: {ENV_GEMINI_KEY[:5]}...")
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
