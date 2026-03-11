@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Discovery Engine</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700&family=Space+Grotesk:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar glass-panel">
+            <div class="logo">
+                <span class="logo-icon">✨</span>
+                <h2>Discovery Engine</h2>
+            </div>
+            <nav>
+                <div class="client-selector" style="margin-bottom: 20px; padding: 0 10px;">
+                    <label for="client-select" class="muted-text text-sm" style="display:block; margin-bottom: 5px;">Active Client</label>
+                    <select id="client-select" class="theme-input" style="width: 100%; padding: 8px; border-radius: 6px;">
+                        <option value="">-- Unassigned --</option>
+                    </select>
+                </div>
+
+                <button class="nav-btn active" data-target="ingestion">
+                    <span class="icon">📥</span> Ingestion
+                </button>
+                <button class="nav-btn" data-target="report">
+                    <span class="icon">📊</span> Discovery Report
+                </button>
+                <button class="nav-btn" data-target="how-it-works">
+                    <span class="icon">💡</span> How it Works
+                </button>
+                <button class="nav-btn" data-target="admin" style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
+                    <span class="icon">⚙️</span> Settings / Admin
+                </button>
+            </nav>
+                <div class="input-group">
+                    <label for="gemini-key">Gemini API Key</label>
+                    <input type="password" id="gemini-key" placeholder="Enter Gemini Key...">
+                </div>
+                <div class="input-group">
+                    <label for="anthropic-key">Anthropic API Key</label>
+                    <input type="password" id="anthropic-key" placeholder="Enter Anthropic Key...">
+                </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <header class="top-nav">
+                <h1>Shift-Left Analysis Dashboard</h1>
+                <div class="status-item">
+                    <span class="status-label">Gemini API:</span>
+                    <span id="gemini-status" class="status-value">Checking...</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Anthropic API:</span>
+                    <span id="anthropic-status" class="status-value">Checking...</span>
+                </div>
+            </header>
+
+            <div class="views-wrapper">
+                
+                <!-- Ingestion View -->
+                <section id="view-ingestion" class="view active fade-in">
+                    <div class="glass-card full-width">
+                        <div class="card-header">
+                            <h3>Analyze a Codebase</h3>
+                            <p>Point at a public GitHub repo, paste code, or upload files.</p>
+                        </div>
+                        
+                        <!-- GitHub URL Input -->
+                        <div class="github-input-section" style="margin-bottom: 24px;">
+                            <label class="input-label">
+                                <span style="font-size: 1.2em;">🔗</span> GitHub Repository URL
+                            </label>
+                            <div style="display: flex; gap: 12px; margin-top: 8px;">
+                                <input type="text" id="github-url" placeholder="https://github.com/owner/repo" 
+                                    style="flex: 1; padding: 14px 16px; background: rgba(10,10,15,0.6); border: 1px solid var(--border-subtle); border-radius: 10px; color: var(--text-main); font-family: 'Space Grotesk', monospace; font-size: 0.95rem; transition: border-color 0.3s;">
+                                <button id="analyze-repo-btn" class="primary-btn">
+                                    <span>🚀</span> Launch Agent Fleet
+                                    <span class="loader" id="repo-loader" style="display:none;"></span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="divider-line" style="border-bottom: 1px solid var(--border-subtle); margin: 20px 0; position: relative;">
+                            <span style="position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: rgba(30,30,45,0.9); padding: 0 16px; color: var(--text-muted); font-size: 0.85rem;">OR paste / upload files</span>
+                        </div>
+                        
+                        <div class="upload-zone" id="drop-zone" style="border: 2px dashed var(--border-subtle); padding: 30px; border-radius: 12px; text-align: center; margin-bottom: 20px; background: rgba(0,0,0,0.2);">
+                            <span style="font-size: 2em; margin-bottom: 15px; display: block;">📂</span>
+                            <h4>Drag & Drop Legacy Folder Here</h4>
+                            <p class="muted-text" style="margin-top: 5px;">or</p>
+                            <label for="folder-upload" class="secondary-btn" style="display: inline-block; margin-top: 15px; cursor: pointer;">Browse Folder</label>
+                            <input type="file" id="folder-upload" webkitdirectory directory multiple style="display: none;">
+                            <div id="file-list" class="muted-text text-sm" style="margin-top: 15px; max-height: 100px; overflow-y: auto; text-align: left;"></div>
+                        </div>
+
+                        <div class="textarea-wrapper">
+                            <textarea id="asset-input" placeholder="Alternatively, paste legacy code or schema dump here..."></textarea>
+                        </div>
+                        <div class="actions">
+                            <button id="analyze-btn" class="secondary-btn" style="padding: 14px 28px;">
+                                Run Legacy Analysis
+                                <span class="loader" style="display:none;"></span>
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Discovery Report View -->
+                <section id="view-report" class="view hidden">
+                    <div class="glass-card full-width dashboard-header" style="margin-bottom: 24px; position: relative; overflow: hidden;">
+                        <div class="header-content">
+                            <h2>Project Discovery Dashboard</h2>
+                            <p class="muted-text">Comprehensive AI-driven analysis and modernisation roadmap.</p>
+                        </div>
+                        
+                        <!-- Agent Fleet Status Panel (Redesigned) -->
+                        <div id="agent-fleet-panel" class="fleet-control-center">
+                            <div class="fleet-header">
+                                <h4 style="color: var(--primary); font-family: 'Space Grotesk', sans-serif; letter-spacing: 1px;">
+                                    <span class="pulse-icon">📡</span> FLEET CONTROL CENTER
+                                </h4>
+                                <div id="fleet-progress" class="fleet-progress-bar">
+                                    <div id="fleet-progress-fill" class="progress-fill"></div>
+                                </div>
+                            </div>
+                            <div id="agent-status-grid" class="agent-status-grid"></div>
+                        </div>
+
+                        <div class="dashboard-controls" style="margin-top: 20px; display: flex; gap: 10px; justify-content: flex-end;">
+                            <button id="collapse-all-btn" class="secondary-btn btn-sm">Collapse All</button>
+                            <button id="expand-all-btn" class="secondary-btn btn-sm">Expand All</button>
+                        </div>
+                    </div>
+
+                    <!-- Modernisation Roadmap Summary (New) -->
+                    <div id="modernisation-roadmap-summary" class="glass-card full-width" style="display: none; border-left: 4px solid var(--primary);">
+                        <div class="card-header">
+                            <h3 style="color: var(--primary);"><span class="icon">🚀</span> Modernisation Roadmap</h3>
+                            <p class="muted-text">High-level transition strategy from Legacy to Cloud-Modern.</p>
+                        </div>
+                        <div id="roadmap-content" class="roadmap-grid">
+                            <!-- Populated by script.js -->
+                        </div>
+                    </div>
+
+                    <!-- Individual report sections -->
+                    <div id="report-sections">
+                        <div class="glass-card full-width report-card" id="report-architect" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">🏗️ Solutions Architect</span>
+                            </div>
+                            <div id="architect-content" class="report-content"></div>
+                            <div class="diagram-container mt-4" style="display: none;" id="mermaid-wrapper">
+                                <div class="mermaid" id="mermaid-output"></div>
+                            </div>
+                        </div>
+
+                        <div class="glass-card full-width report-card" id="report-ba" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">📋 Business Analyst</span>
+                            </div>
+                            <div id="ba-content" class="report-content"></div>
+                        </div>
+
+                        <div class="glass-card full-width report-card" id="report-tech_docs" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">📄 Technical Writer</span>
+                            </div>
+                            <div id="tech_docs-content" class="report-content"></div>
+                        </div>
+
+                        <div class="glass-card full-width report-card" id="report-data_engineering" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">🗄️ Data Engineer</span>
+                            </div>
+                            <div id="data_engineering-content" class="report-content"></div>
+                        </div>
+
+                        <div class="glass-card full-width report-card" id="report-devops" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">⚙️ DevOps/SRE Engineer</span>
+                            </div>
+                            <div id="devops-content" class="report-content"></div>
+                        </div>
+
+                        <div class="glass-card full-width report-card" id="report-product_management" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">🎯 Product Manager</span>
+                            </div>
+                            <div id="product_management-content" class="report-content"></div>
+                        </div>
+
+                        <div class="glass-card full-width report-card" id="report-ui_ux" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">🎨 UI/UX Designer</span>
+                            </div>
+                            <div id="ui_ux-content" class="report-content"></div>
+                        </div>
+
+                        <div class="glass-card full-width report-card" id="report-qa" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">✅ QA Engineering Lead</span>
+                            </div>
+                            <div id="qa-content" class="report-content"></div>
+                        </div>
+
+                        <div class="glass-card full-width report-card" id="report-security" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">🔒 Security Engineer</span>
+                            </div>
+                            <div id="security-content" class="report-content"></div>
+                        </div>
+
+                        <div class="glass-card full-width report-card" id="report-compliance" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">⚖️ Compliance Officer</span>
+                            </div>
+                            <div id="compliance-content" class="report-content"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Admin View -->
+                <section id="view-admin" class="view hidden">
+                    <div class="glass-card full-width">
+                        <h3>Client & Persona Management</h3>
+                        <p class="muted-text">Manage database resources for Supabase.</p>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
+                            <div class="admin-panel" style="background: rgba(40,40,55,0.4); padding: 20px; border-radius: 12px; border: 1px solid var(--border-subtle);">
+                                <h4>Create New Client</h4>
+                                <input type="text" id="new-client-name" placeholder="Client Name" style="width: 100%; margin-bottom: 10px; padding: 10px; border-radius: 6px; border: 1px solid var(--border-subtle); background: var(--bg-dark); color: white;">
+                                <textarea id="new-client-desc" placeholder="Industry/Context Description" style="width: 100%; height: 80px; margin-bottom: 10px; padding: 10px; border-radius: 6px; border: 1px solid var(--border-subtle); background: var(--bg-dark); color: white; resize: vertical;"></textarea>
+                                <button id="create-client-btn" class="secondary-btn">Create Client</button>
+                            </div>
+
+                            <div class="admin-panel" style="background: rgba(40,40,55,0.4); padding: 20px; border-radius: 12px; border: 1px solid var(--border-subtle);">
+                                <h4>Create Dynamic Persona</h4>
+                                <input type="text" id="new-persona-model" placeholder="Role Name (e.g. SRE Lead)" style="width: 100%; margin-bottom: 10px; padding: 10px; border-radius: 6px; border: 1px solid var(--border-subtle); background: var(--bg-dark); color: white;">
+                                <textarea id="new-persona-prompt" placeholder="System Prompt / Expected Formatting Instructions" style="width: 100%; height: 80px; margin-bottom: 10px; padding: 10px; border-radius: 6px; border: 1px solid var(--border-subtle); background: var(--bg-dark); color: white; resize: vertical;"></textarea>
+                                <button id="create-persona-btn" class="secondary-btn">Create Persona</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- How it Works View -->
+                <section id="view-how-it-works" class="view hidden fade-in">
+                    <div class="glass-card full-width">
+                        <h3 class="modern-heading">💡 HOW THE DISCOVERY ENGINE WORKS</h3>
+                        <p class="muted-text mb-4">A peak under the hood of our Multi-Agent Hybrid Intelligence platform.</p>
+                        
+                        <div class="explainer-grid">
+                            <div class="explainer-step">
+                                <div class="step-icon">📡</div>
+                                <h5>1. Repository Ingestion</h5>
+                                <p>Our engine clones the repository and performs a deep recursive scan, filtering for source code while skipping binary artifacts and dependencies. Content is aggregated into a high-density intelligence context.</p>
+                            </div>
+                            <div class="explainer-step">
+                                <div class="step-icon">🤖</div>
+                                <h5>2. Fleet Dispatch</h5>
+                                <p>We launch a fleet of 11+ specialized AI personas. Each agent is a distinct instance of either **Claude 3.5 Sonnet** (for complex logic/strategy) or **Gemini 1.5/2.0** (for deep research and grounding).</p>
+                            </div>
+                            <div class="explainer-step">
+                                <div class="step-icon">🔍</div>
+                                <h5>3. Grounded Research</h5>
+                                <p>Gemini agents use Google Search grounding to research the tech stack, library vulnerabilities, and industry standards, ensuring the analysis isn't just a hallucination but a verified audit.</p>
+                            </div>
+                            <div class="explainer-step">
+                                <div class="step-icon">🏗️</div>
+                                <h5>4. Synthesis & Visualization</h5>
+                                <p>The Architect agent synthesizes the findings into a phased roadmap, while the BA generates a structured Jira backlog. Mermaid.js is utilized to render real-time architectural diagrams.</p>
+                            </div>
+                        </div>
+
+                        <div class="tech-stack-showcase mt-5">
+                            <h4>Hybrid Intelligence Model</h4>
+                            <div class="stack-badges" style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 15px;">
+                                <span class="status-pill env">Claude 3.5 Sonnet</span>
+                                <span class="status-pill env">Gemini 2.0 Flash</span>
+                                <span class="status-pill success">Google Search Grounding</span>
+                                <span class="status-pill success">Mermaid Diagrams</span>
+                                <span class="status-pill success">FastAPI & SSE</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+            </div>
+        </main>
+    </div>
+
+    <!-- Add Mermaid.js -->
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ 
+            startOnLoad: false,
+            theme: 'dark',
+            fontFamily: "'Space Grotesk', sans-serif"
+        });
+        window.mermaid = mermaid;
+    </script>
+    <script src="/static/script.js" type="module"></script>
+    <!-- Persona Profile Modal -->
+    <div id="persona-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-content glass-card">
+            <div class="modal-header">
+                <div class="modal-title-box">
+                    <span id="modal-emoji" class="modal-emoji"></span>
+                    <h3 id="modal-name">Persona Name</h3>
+                </div>
+                <button class="close-modal" id="close-modal-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-section">
+                    <label>Identity & Mission</label>
+                    <p id="modal-mission" class="modal-text"></p>
+                </div>
+                <div class="modal-section">
+                    <label>Assigned Homework (Research)</label>
+                    <p id="modal-homework" class="modal-text"></p>
+                </div>
+                <div class="modal-section">
+                    <label>Output Expectations</label>
+                    <p id="modal-expectations" class="modal-text"></p>
+                </div>
+                <div class="modal-section" id="modal-model-box">
+                    <label>Core Intelligence Model</label>
+                    <span id="modal-model" class="status-badge env"></span>
+                </div>
+            </div>
+        </div>
+    </div>

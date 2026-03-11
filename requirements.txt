@@ -1,0 +1,10 @@
+fastapi
+pydantic
+uvicorn
+python-multipart
+supabase
+google-genai
+httpx
+sse-starlette
+python-dotenv
+anthropic
