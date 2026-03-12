@@ -454,6 +454,227 @@ async def generate_kickoff_pack(request: KickoffPackRequest):
 
 
 # ─────────────────────────────────────────────
+# Meeting Room API
+# ─────────────────────────────────────────────
+
+class MeetingOpeningsRequest(BaseModel):
+    agent_reports: dict  # {persona_key: content_str}
+
+class MeetingDebateRequest(BaseModel):
+    agent_reports: dict  # {persona_key: {name, emoji, content}}
+
+class MeetingAskRequest(BaseModel):
+    question: str
+    agent_reports: dict  # {persona_key: {name, emoji, content}}
+
+
+@app.post("/api/meeting/openings")
+async def meeting_openings(request: MeetingOpeningsRequest):
+    """Generate a short spoken opening statement for each agent."""
+    if not ENV_ANTHROPIC_KEY:
+        raise HTTPException(status_code=400, detail="Anthropic API key not configured")
+
+    summaries = {}
+    for key, content in request.agent_reports.items():
+        if content and len(content) > 50:
+            summaries[key] = content[:1200]
+
+    condensed = "\n\n".join(
+        f'[{k}]:\n{v}' for k, v in summaries.items()
+    )
+
+    prompt = f"""You are a meeting facilitator. Each expert agent has completed a codebase analysis.
+Generate a 2-3 sentence spoken opening statement for each agent — the statement they will read aloud at the start of the board meeting.
+
+Rules:
+- Each statement must start with the agent identifying themselves by role
+- State the single most critical finding from their analysis
+- End with the business impact in plain language
+- Plain speech ONLY — no markdown, no bullet points, no headers — this will be read aloud via text-to-speech
+- Each statement should sound natural when spoken
+
+Return ONLY valid JSON: {{"architect": "I am the Solutions Architect. My analysis reveals...", "ba": "..."}}
+
+Agent reports (truncated):
+{condensed[:8000]}"""
+
+    try:
+        client = anthropic_sdk.AsyncAnthropic(api_key=ENV_ANTHROPIC_KEY)
+        message = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=3000,
+            temperature=0.7,
+            system="You are a corporate communications specialist. Generate natural, spoken-word opening statements. Return valid JSON only — no markdown wrapping.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = message.content[0].text.strip()
+        # Strip markdown code fences if present
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.rsplit("```", 1)[0]
+        openings = json.loads(text.strip())
+    except Exception as e:
+        # Graceful fallback: extract first sentence from each report
+        openings = {}
+        for key, content in summaries.items():
+            cfg = agent_engine.PERSONA_CONFIGS.get(key, {})
+            name = cfg.get("name", key)
+            first_line = content.split('\n')[0].replace('#', '').strip()[:200]
+            openings[key] = f"I am the {name}. {first_line}"
+
+    return {"openings": openings}
+
+
+@app.post("/api/meeting/debate")
+async def meeting_debate(request: MeetingDebateRequest):
+    """Generate a debate transcript between agents showing cross-domain tensions."""
+    if not ENV_ANTHROPIC_KEY:
+        raise HTTPException(status_code=400, detail="Anthropic API key not configured")
+
+    agent_summaries = []
+    for key, data in request.agent_reports.items():
+        cfg = agent_engine.PERSONA_CONFIGS.get(key) or (agent_engine.SYNTHESIS_CONFIG if key == "synthesis" else {})
+        name = cfg.get("name", key)
+        content = data.get("content", "") if isinstance(data, dict) else str(data)
+        agent_summaries.append(f"[{key}] {name}:\n{content[:800]}")
+
+    prompt = f"""You are the moderator of a CTO-level discovery board meeting. All expert agents have completed their analysis. Now generate a realistic, intellectually charged debate transcript (10-12 turns) where the experts challenge each other.
+
+REQUIRED TENSION POINTS (must include these conflicts):
+1. Security Engineer vs Performance Engineer: Security's controls add latency — who wins?
+2. Solutions Architect vs Tech Lead: Big-bang refactor vs pragmatic incremental debt paydown
+3. Cost Optimisation Analyst vs DevOps/SRE: Full observability stack is expensive — justify it
+4. QA Lead vs Product Manager: Test coverage gates slow delivery velocity — where's the balance?
+5. Synthesis Agent: Closes the debate with a binding recommendation that resolves the key conflicts
+
+Rules for each turn:
+- 2-4 conversational sentences, plain speech, NO markdown, no bullet points
+- Each agent must reference a SPECIFIC finding from their analysis (not generic platitudes)
+- Agents defend their professional position with genuine intellectual conviction
+- Language is professional but direct — real experts push back
+
+Return ONLY a valid JSON array:
+[{{"speaker": "security", "text": "I need to address something the performance engineer said..."}}, ...]
+
+Available speaker keys: architect, ba, qa, security, tech_docs, data_engineering, devops, product_management, ui_ux, compliance, secops, performance_engineer, cost_analyst, api_designer, tech_lead, synthesis
+
+Agent report summaries:
+{chr(10).join(agent_summaries[:10])}"""
+
+    try:
+        client = anthropic_sdk.AsyncAnthropic(api_key=ENV_ANTHROPIC_KEY)
+        message = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=4000,
+            temperature=0.85,
+            system="You are a corporate meeting facilitator generating realistic expert debates. Return valid JSON array only — no markdown wrapping.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = message.content[0].text.strip()
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.rsplit("```", 1)[0]
+        turns = json.loads(text.strip())
+    except Exception:
+        turns = [
+            {"speaker": "architect", "text": "I want to highlight that the modernisation roadmap I've outlined is the most critical path forward for this codebase. The architectural debt is compounding."},
+            {"speaker": "security", "text": "I agree modernisation is needed, but security cannot be bolted on at the end. We have critical vulnerabilities that must be addressed in phase one, not phase three."},
+            {"speaker": "synthesis", "text": "Both are right. The critical path is security-first modernisation. We secure the perimeter while extracting the first bounded context. Neither camp wins alone — both must happen concurrently."}
+        ]
+
+    enriched = []
+    for t in turns:
+        key = t.get("speaker", "synthesis")
+        cfg = agent_engine.PERSONA_CONFIGS.get(key) or (agent_engine.SYNTHESIS_CONFIG if key == "synthesis" else {"name": key, "emoji": "🤖"})
+        enriched.append({
+            "speaker": key,
+            "name": cfg.get("name", key),
+            "emoji": cfg.get("emoji", "🤖"),
+            "text": t.get("text", "")
+        })
+
+    return {"turns": enriched}
+
+
+@app.post("/api/meeting/ask")
+async def meeting_ask(request: MeetingAskRequest):
+    """Route a question to the most relevant agent and return their spoken answer."""
+    if not ENV_ANTHROPIC_KEY:
+        raise HTTPException(status_code=400, detail="Anthropic API key not configured")
+
+    available = {k: v.get("name", k) for k, v in request.agent_reports.items()}
+    agent_list = "\n".join(f"- {k}: {name}" for k, name in available.items())
+
+    routing_prompt = f"""Question: "{request.question}"
+
+Available experts:
+{agent_list}
+
+Which expert is MOST relevant to answer this question? Reply with ONLY the exact agent key (e.g. "security" or "architect"). No explanation, no punctuation."""
+
+    try:
+        client = anthropic_sdk.AsyncAnthropic(api_key=ENV_ANTHROPIC_KEY)
+        routing_msg = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=20,
+            temperature=0,
+            messages=[{"role": "user", "content": routing_prompt}]
+        )
+        best_key = routing_msg.content[0].text.strip().lower().strip('"\'').strip()
+        if best_key not in request.agent_reports:
+            best_key = "synthesis" if "synthesis" in request.agent_reports else list(request.agent_reports.keys())[0]
+    except Exception:
+        best_key = "synthesis" if "synthesis" in request.agent_reports else list(request.agent_reports.keys())[0]
+
+    agent_data = request.agent_reports.get(best_key, {})
+    content = agent_data.get("content", "") if isinstance(agent_data, dict) else str(agent_data)
+    cfg = agent_engine.PERSONA_CONFIGS.get(best_key) or (agent_engine.SYNTHESIS_CONFIG if best_key == "synthesis" else {"name": best_key, "emoji": "🤖", "model": "anthropic"})
+
+    answer_prompt = f"""You are the {cfg.get('name', best_key)}. A stakeholder just asked this question during a board meeting:
+
+"{request.question}"
+
+Your previous analysis (context):
+{content[:4000]}
+
+Give a direct, authoritative spoken answer (3-5 sentences). Plain speech ONLY — this will be read aloud via text-to-speech. No markdown, no bullet points, no headers. Be specific and reference concrete findings from your analysis."""
+
+    model_type = cfg.get("model", "anthropic") if best_key != "synthesis" else "anthropic"
+
+    try:
+        if model_type == "anthropic" or not ENV_GEMINI_KEY:
+            client = anthropic_sdk.AsyncAnthropic(api_key=ENV_ANTHROPIC_KEY)
+            msg = await client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=500,
+                temperature=0.5,
+                messages=[{"role": "user", "content": answer_prompt}]
+            )
+            answer = msg.content[0].text
+        else:
+            gemini_client = genai.Client(api_key=ENV_GEMINI_KEY)
+            resp = await gemini_client.aio.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=answer_prompt,
+                config=types.GenerateContentConfig(temperature=0.5)
+            )
+            answer = resp.text
+    except Exception as e:
+        answer = f"I apologise, I'm unable to answer at this time. Please check the API configuration. Error: {str(e)}"
+
+    return {
+        "agent_key": best_key,
+        "name": cfg.get("name", best_key),
+        "emoji": cfg.get("emoji", "🤖"),
+        "answer": answer
+    }
+
+
+# ─────────────────────────────────────────────
 # Report History
 # ─────────────────────────────────────────────
 

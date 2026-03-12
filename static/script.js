@@ -1111,4 +1111,520 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-});
+    // ═══════════════════════════════════════════════════════════
+    // MEETING ROOM
+    // ═══════════════════════════════════════════════════════════
+
+    // Agent seat order around the table (16 total: 15 personas + synthesis)
+    const MEETING_AGENT_ORDER = [
+        'architect', 'ba', 'qa', 'security', 'tech_docs',
+        'data_engineering', 'devops', 'product_management', 'ui_ux',
+        'compliance', 'secops', 'performance_engineer', 'cost_analyst',
+        'api_designer', 'tech_lead', 'synthesis'
+    ];
+
+    // Voice fingerprints — distinct pitch/rate per agent so they sound different
+    const VOICE_PROFILES = {
+        architect:           { pitch: 0.85, rate: 0.90 },
+        ba:                  { pitch: 1.10, rate: 1.00 },
+        qa:                  { pitch: 1.00, rate: 1.05 },
+        security:            { pitch: 0.78, rate: 0.85 },
+        tech_docs:           { pitch: 1.05, rate: 0.95 },
+        data_engineering:    { pitch: 0.90, rate: 1.00 },
+        devops:              { pitch: 0.95, rate: 1.10 },
+        product_management:  { pitch: 1.15, rate: 1.02 },
+        ui_ux:               { pitch: 1.20, rate: 0.95 },
+        compliance:          { pitch: 0.82, rate: 0.85 },
+        secops:              { pitch: 0.78, rate: 0.88 },
+        performance_engineer:{ pitch: 0.95, rate: 1.08 },
+        cost_analyst:        { pitch: 1.02, rate: 1.00 },
+        api_designer:        { pitch: 1.08, rate: 1.02 },
+        tech_lead:           { pitch: 0.88, rate: 0.90 },
+        synthesis:           { pitch: 0.72, rate: 0.83 },
+    };
+
+    const meetingState = {
+        phase: 'idle',       // idle | loading | opening | debate | qa
+        isMuted: false,
+        speed: 1.0,
+        currentUtterance: null,
+        isPaused: false,
+        openings: {},        // persona_key → spoken text
+        debateTurns: [],     // [{speaker, name, emoji, text}]
+        agentReports: {},    // persona_key → {name, emoji, content}
+        skipRequested: false,
+    };
+
+    // ── Helpers ──────────────────────────────────────────────
+
+    function getMeetingAgentConfig(key) {
+        return state.personaConfigs[key] || { name: key, emoji: '🤖' };
+    }
+
+    function buildAgentReportsPayload() {
+        const payload = {};
+        for (const [key, content] of Object.entries(state.reportContents)) {
+            const cfg = getMeetingAgentConfig(key);
+            payload[key] = { name: cfg.name || key, emoji: cfg.emoji || '🤖', content };
+        }
+        return payload;
+    }
+
+    // ── Conference table rendering ────────────────────────────
+
+    function renderConferenceTable() {
+        const ring = document.getElementById('mr-agents-ring');
+        if (!ring) return;
+        ring.innerHTML = '';
+
+        const available = MEETING_AGENT_ORDER.filter(k => state.reportContents[k]);
+        const total = available.length;
+
+        // Ellipse parameters (% of .mr-table-wrap)
+        const cx = 50, cy = 46, rx = 42, ry = 33;
+
+        available.forEach((key, i) => {
+            const angle = (i / total) * 2 * Math.PI - Math.PI / 2;
+            const x = cx + rx * Math.cos(angle);
+            const y = cy + ry * Math.sin(angle);
+
+            const cfg = getMeetingAgentConfig(key);
+            const isSynthesis = key === 'synthesis';
+
+            const seat = document.createElement('div');
+            seat.className = `mr-agent-seat${isSynthesis ? ' mr-seat-synthesis' : ''}`;
+            seat.id = `mr-seat-${key}`;
+            seat.style.left = `${x}%`;
+            seat.style.top = `${y}%`;
+            seat.innerHTML = `
+                <div class="mr-avatar" data-key="${key}" title="${cfg.name || key}">
+                    <span class="mr-av-emoji">${cfg.emoji || '🤖'}</span>
+                </div>
+                <div class="mr-av-name">${(cfg.name || key).replace('Solutions ', '').replace(' Engineer', '').replace(' Analyst', '').replace(' Manager', '').replace(' Designer', '').replace(' Lead', '')}</div>
+            `;
+            // Click to jump to their report
+            seat.querySelector('.mr-avatar').addEventListener('click', () => {
+                navigateToView('report');
+                setTimeout(() => {
+                    const card = document.getElementById(`report-${key}`);
+                    if (card) card.scrollIntoView({ behavior: 'smooth' });
+                }, 150);
+            });
+            ring.appendChild(seat);
+        });
+    }
+
+    // ── TTS ──────────────────────────────────────────────────
+
+    function getVoices() {
+        return window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+    }
+
+    // Pick a stable voice for an agent — varies by what the browser has
+    function pickVoice(key) {
+        const voices = getVoices();
+        if (!voices.length) return null;
+        // Prefer English voices
+        const eng = voices.filter(v => v.lang.startsWith('en'));
+        const pool = eng.length ? eng : voices;
+        // Deterministic selection by agent index
+        const idx = MEETING_AGENT_ORDER.indexOf(key);
+        return pool[idx % pool.length] || null;
+    }
+
+    function speak(text, agentKey, onEnd) {
+        if (!window.speechSynthesis) { if (onEnd) onEnd(); return; }
+        window.speechSynthesis.cancel();
+
+        if (meetingState.isMuted) { if (onEnd) onEnd(); return; }
+
+        const utter = new SpeechSynthesisUtterance(text);
+        const profile = VOICE_PROFILES[agentKey] || { pitch: 1.0, rate: 1.0 };
+        utter.pitch = profile.pitch;
+        utter.rate = profile.rate * meetingState.speed;
+        const voice = pickVoice(agentKey);
+        if (voice) utter.voice = voice;
+
+        utter.onend = () => { meetingState.currentUtterance = null; if (onEnd) onEnd(); };
+        utter.onerror = () => { meetingState.currentUtterance = null; if (onEnd) onEnd(); };
+
+        meetingState.currentUtterance = utter;
+        window.speechSynthesis.speak(utter);
+    }
+
+    function stopSpeaking() {
+        if (window.speechSynthesis) window.speechSynthesis.cancel();
+        meetingState.currentUtterance = null;
+    }
+
+    // ── UI helpers ───────────────────────────────────────────
+
+    function highlightSpeaker(key) {
+        document.querySelectorAll('.mr-agent-seat').forEach(el => el.classList.remove('mr-speaking'));
+        if (key) {
+            const seat = document.getElementById(`mr-seat-${key}`);
+            if (seat) {
+                seat.classList.add('mr-speaking');
+                seat.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+    }
+
+    function updateSpeechPanel(emoji, name, text) {
+        const emojiEl = document.getElementById('mr-speaker-emoji');
+        const nameEl = document.getElementById('mr-speaker-name');
+        const textEl = document.getElementById('mr-speech-text');
+        const dots = document.getElementById('mr-speaking-dots');
+        if (emojiEl) emojiEl.textContent = emoji;
+        if (nameEl) nameEl.textContent = name;
+        if (textEl) textEl.textContent = text;
+        if (dots) dots.style.display = meetingState.isMuted ? 'none' : 'inline-flex';
+    }
+
+    function addToTranscript(emoji, name, text) {
+        const log = document.getElementById('mr-transcript-log');
+        if (!log) return;
+        const entry = document.createElement('div');
+        entry.className = 'mr-transcript-entry';
+        entry.innerHTML = `<span class="mr-tr-emoji">${emoji}</span><div><strong class="mr-tr-name">${name}</strong><p class="mr-tr-text">${text}</p></div>`;
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+    }
+
+    function addToQALog(question, agentEmoji, agentName, answer) {
+        const log = document.getElementById('mr-qa-log');
+        if (!log) return;
+        const entry = document.createElement('div');
+        entry.className = 'mr-qa-entry';
+        entry.innerHTML = `
+            <div class="mr-qa-q"><span>👤 You</span><p>${question}</p></div>
+            <div class="mr-qa-a"><span>${agentEmoji} ${agentName}</span><p>${answer}</p></div>
+        `;
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+    }
+
+    function setPhaseActive(phase) {
+        ['openings', 'debate', 'qa'].forEach(p => {
+            const el = document.getElementById(`mr-phase-${p}`);
+            if (el) el.classList.toggle('mr-phase-active', p === phase);
+        });
+    }
+
+    function setMeetingControls(phase) {
+        const beginBtn = document.getElementById('mr-begin-btn');
+        const pauseBtn = document.getElementById('mr-pause-btn');
+        const skipBtn = document.getElementById('mr-skip-btn');
+        const qaPanel = document.getElementById('mr-qa-panel');
+
+        if (phase === 'idle') {
+            if (beginBtn) { beginBtn.style.display = ''; beginBtn.disabled = false; beginBtn.textContent = '▶ Begin Meeting'; }
+            if (pauseBtn) pauseBtn.style.display = 'none';
+            if (skipBtn) skipBtn.style.display = 'none';
+            if (qaPanel) qaPanel.style.display = 'none';
+        } else if (phase === 'loading') {
+            if (beginBtn) { beginBtn.style.display = ''; beginBtn.disabled = true; beginBtn.textContent = '⏳ Generating...'; }
+            if (pauseBtn) pauseBtn.style.display = 'none';
+            if (skipBtn) skipBtn.style.display = 'none';
+        } else if (phase === 'opening' || phase === 'debate') {
+            if (beginBtn) beginBtn.style.display = 'none';
+            if (pauseBtn) pauseBtn.style.display = '';
+            if (skipBtn) skipBtn.style.display = '';
+            if (qaPanel) qaPanel.style.display = 'none';
+        } else if (phase === 'qa') {
+            if (beginBtn) beginBtn.style.display = 'none';
+            if (pauseBtn) pauseBtn.style.display = 'none';
+            if (skipBtn) skipBtn.style.display = 'none';
+            if (qaPanel) { qaPanel.style.display = ''; }
+        }
+    }
+
+    // ── Sequential playback of an array of turns ─────────────
+
+    function playTurns(turns, onAllDone) {
+        let i = 0;
+        function playNext() {
+            if (meetingState.isPaused) {
+                // Poll until unpaused
+                setTimeout(playNext, 300);
+                return;
+            }
+            if (i >= turns.length) {
+                highlightSpeaker(null);
+                document.getElementById('mr-speaking-dots').style.display = 'none';
+                if (onAllDone) onAllDone();
+                return;
+            }
+            const turn = turns[i++];
+            meetingState.skipRequested = false;
+
+            highlightSpeaker(turn.speaker);
+            updateSpeechPanel(turn.emoji, turn.name, turn.text);
+            addToTranscript(turn.emoji, turn.name, turn.text);
+
+            speak(turn.text, turn.speaker, () => {
+                // Small gap between speakers
+                setTimeout(playNext, meetingState.skipRequested ? 0 : 600);
+            });
+
+            // If skip requested, cancel current utterance and advance
+            const checkSkip = setInterval(() => {
+                if (meetingState.skipRequested) {
+                    clearInterval(checkSkip);
+                    stopSpeaking();
+                }
+            }, 100);
+        }
+        playNext();
+    }
+
+    // ── Phase orchestration ───────────────────────────────────
+
+    async function startOpeningCeremony() {
+        setMeetingControls('loading');
+        updateSpeechPanel('⏳', 'Generating opening statements...', 'Calling the AI to prepare each agent\'s spoken introduction. This takes about 10 seconds...');
+
+        // Fetch openings
+        const contentPayload = {};
+        for (const [k, v] of Object.entries(state.reportContents)) {
+            contentPayload[k] = v;
+        }
+
+        try {
+            const res = await fetch('/api/meeting/openings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agent_reports: contentPayload })
+            });
+            const data = await res.json();
+            meetingState.openings = data.openings || {};
+        } catch(e) {
+            // Fallback: use first line of each report
+            for (const [k, content] of Object.entries(state.reportContents)) {
+                const cfg = getMeetingAgentConfig(k);
+                const line = content.split('\n').find(l => l.trim().length > 20) || 'Analysis complete.';
+                meetingState.openings[k] = `I am the ${cfg.name || k}. ${line.replace(/[#*_]/g, '').trim().substring(0, 200)}`;
+            }
+        }
+
+        // Build turns from openings in seat order
+        const openingTurns = MEETING_AGENT_ORDER
+            .filter(k => meetingState.openings[k] && state.reportContents[k])
+            .map(k => {
+                const cfg = getMeetingAgentConfig(k);
+                return { speaker: k, name: cfg.name || k, emoji: cfg.emoji || '🤖', text: meetingState.openings[k] };
+            });
+
+        meetingState.phase = 'opening';
+        setPhaseActive('openings');
+        setMeetingControls('opening');
+
+        // Clear transcript
+        const log = document.getElementById('mr-transcript-log');
+        if (log) log.innerHTML = '';
+
+        playTurns(openingTurns, startDebate);
+    }
+
+    async function startDebate() {
+        meetingState.phase = 'loading_debate';
+        setMeetingControls('loading');
+        updateSpeechPanel('🤝', 'Generating expert debate...', 'The AI is writing a cross-domain debate based on all agent findings. This may take 15-20 seconds...');
+
+        try {
+            const res = await fetch('/api/meeting/debate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agent_reports: buildAgentReportsPayload() })
+            });
+            const data = await res.json();
+            meetingState.debateTurns = data.turns || [];
+        } catch(e) {
+            meetingState.debateTurns = [{
+                speaker: 'synthesis', name: 'The Verdict', emoji: '🎯',
+                text: 'I have reviewed all the analyses. The consensus is clear: prioritise security hardening alongside the architectural refactor, with cost governance integrated from day one. The team is aligned.'
+            }];
+        }
+
+        meetingState.phase = 'debate';
+        setPhaseActive('debate');
+        setMeetingControls('debate');
+        playTurns(meetingState.debateTurns, openQAMode);
+    }
+
+    function openQAMode() {
+        meetingState.phase = 'qa';
+        setPhaseActive('qa');
+        setMeetingControls('qa');
+        highlightSpeaker(null);
+        updateSpeechPanel('💬', 'Q&A Mode Active', 'The meeting is open for questions. Type below and the most relevant expert will answer.');
+        document.getElementById('mr-speaking-dots').style.display = 'none';
+    }
+
+    // ── Q&A question handling ─────────────────────────────────
+
+    async function handleMeetingQuestion() {
+        const input = document.getElementById('mr-question-input');
+        const question = input?.value.trim();
+        if (!question) return;
+        input.value = '';
+
+        const askBtn = document.getElementById('mr-ask-btn');
+        if (askBtn) { askBtn.disabled = true; askBtn.textContent = '⏳'; }
+
+        updateSpeechPanel('🤔', 'Routing question...', `"${question}"`);
+
+        try {
+            const res = await fetch('/api/meeting/ask', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    question,
+                    agent_reports: buildAgentReportsPayload()
+                })
+            });
+            const data = await res.json();
+
+            highlightSpeaker(data.agent_key);
+            updateSpeechPanel(data.emoji, data.name, data.answer);
+            addToQALog(question, data.emoji, data.name, data.answer);
+            speak(data.answer, data.agent_key, () => {
+                highlightSpeaker(null);
+                updateSpeechPanel('💬', 'Q&A Mode Active', 'Ask another question...');
+                document.getElementById('mr-speaking-dots').style.display = 'none';
+            });
+        } catch(e) {
+            updateSpeechPanel('⚠️', 'Error', 'Failed to route question. Please try again.');
+        } finally {
+            if (askBtn) { askBtn.disabled = false; askBtn.textContent = 'Ask →'; }
+        }
+    }
+
+    // ── Navigation helper (re-use existing nav) ───────────────
+
+    function navigateToView(target) {
+        const btn = document.querySelector(`.nav-btn[data-target="${target}"]`);
+        if (btn) btn.click();
+    }
+
+    // ── Wire up meeting room events ───────────────────────────
+
+    function initMeetingRoom() {
+        // Render table with current report contents
+        const repoLabel = document.getElementById('mr-repo-label');
+        if (repoLabel) repoLabel.textContent = state.lastAnalyzedUrl || 'Analysis loaded';
+        renderConferenceTable();
+        setMeetingControls('idle');
+        meetingState.phase = 'idle';
+        meetingState.isPaused = false;
+
+        // Reset transcript
+        const log = document.getElementById('mr-transcript-log');
+        if (log) log.innerHTML = '';
+        const qaLog = document.getElementById('mr-qa-log');
+        if (qaLog) qaLog.innerHTML = '';
+
+        updateSpeechPanel('🎙️', 'Ready to begin', 'Click "Begin Meeting" to start. All 16 experts will deliver opening statements, then debate their findings, then answer your questions.');
+        document.getElementById('mr-speaking-dots').style.display = 'none';
+
+        // Reset phase bar
+        ['openings', 'debate', 'qa'].forEach(p => {
+            const el = document.getElementById(`mr-phase-${p}`);
+            if (el) el.classList.remove('mr-phase-active');
+        });
+    }
+
+    // Begin button
+    document.getElementById('mr-begin-btn')?.addEventListener('click', () => {
+        if (meetingState.phase === 'idle') startOpeningCeremony();
+    });
+
+    // Pause / resume
+    document.getElementById('mr-pause-btn')?.addEventListener('click', () => {
+        meetingState.isPaused = !meetingState.isPaused;
+        const btn = document.getElementById('mr-pause-btn');
+        if (meetingState.isPaused) {
+            stopSpeaking();
+            btn.textContent = '▶ Resume';
+        } else {
+            btn.textContent = '⏸ Pause';
+        }
+    });
+
+    // Skip current speaker
+    document.getElementById('mr-skip-btn')?.addEventListener('click', () => {
+        meetingState.skipRequested = true;
+        stopSpeaking();
+    });
+
+    // Mute toggle
+    document.getElementById('mr-mute-btn')?.addEventListener('click', () => {
+        meetingState.isMuted = !meetingState.isMuted;
+        const btn = document.getElementById('mr-mute-btn');
+        btn.textContent = meetingState.isMuted ? '🔇 Voice Off' : '🔊 Voice On';
+        if (meetingState.isMuted) stopSpeaking();
+    });
+
+    // Speed control
+    document.getElementById('mr-speed')?.addEventListener('input', (e) => {
+        meetingState.speed = parseFloat(e.target.value);
+        const label = document.getElementById('mr-speed-val');
+        if (label) label.textContent = `${meetingState.speed.toFixed(1)}×`;
+    });
+
+    // Q&A ask button + Enter key
+    document.getElementById('mr-ask-btn')?.addEventListener('click', handleMeetingQuestion);
+    document.getElementById('mr-question-input')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') handleMeetingQuestion();
+    });
+
+    // Enter meeting room button (in report view)
+    document.getElementById('enter-meeting-btn')?.addEventListener('click', () => {
+        navigateToView('meeting');
+        setTimeout(initMeetingRoom, 100);
+    });
+
+    // Nav button for meeting
+    document.getElementById('nav-meeting-btn')?.addEventListener('click', () => {
+        // initMeetingRoom called by the nav click event (view switch)
+        setTimeout(initMeetingRoom, 100);
+    });
+
+    // Show meeting room button & nav when analysis completes
+    function revealMeetingRoom() {
+        const meetingBtn = document.getElementById('enter-meeting-btn');
+        const navBtn = document.getElementById('nav-meeting-btn');
+        if (meetingBtn) meetingBtn.style.display = '';
+        if (navBtn) navBtn.style.display = '';
+    }
+
+    // Hook into the analysis complete signal
+    const _origHandleSSE = handleSSEEvent;
+    // Patch: monitor for synthesis completion to reveal meeting room
+    const _origRenderAgentResult = window._renderAgentResult;
+
+    // Watch for synthesis result in renderAgentResult calls
+    const _origStatusComplete = updateFleetStatusMessage;
+
+    // Simple approach: watch doneCount hitting total
+    function checkRevealMeeting() {
+        const doneCount = document.querySelectorAll('.agent-status-card.done').length;
+        if (doneCount >= 16) revealMeetingRoom();
+    }
+
+    // Poll briefly after each agent result — stops once triggered
+    const meetingRevealObserver = new MutationObserver(() => {
+        checkRevealMeeting();
+    });
+    const statusGrid = document.getElementById('agent-status-grid');
+    if (statusGrid) {
+        meetingRevealObserver.observe(statusGrid, { subtree: true, attributes: true, attributeFilter: ['class'] });
+    }
+
+    // Load voices (Chrome needs this triggered on user interaction)
+    if (window.speechSynthesis) {
+        window.speechSynthesis.getVoices();
+        window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+    }
+
+});  // end DOMContentLoaded

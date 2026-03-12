@@ -32,6 +32,9 @@
                 <button class="nav-btn" data-target="how-it-works">
                     <span class="icon">💡</span> How it Works
                 </button>
+                <button class="nav-btn" id="nav-meeting-btn" data-target="meeting" style="display:none;">
+                    <span class="icon">🎙️</span> Meeting Room
+                </button>
                 <button class="nav-btn" data-target="history">
                     <span class="icon">📚</span> History
                 </button>
@@ -178,6 +181,7 @@
                             <button id="expand-all-btn" class="secondary-btn btn-sm">Expand All</button>
                             <button id="download-full-report-btn" class="secondary-btn btn-sm">⬇️ Download Full Report</button>
                             <button id="generate-kickoff-btn" class="primary-btn btn-sm" style="background: linear-gradient(135deg, #f59e0b, #d97706);">🚀 Generate Team Kickoff Pack</button>
+                            <button id="enter-meeting-btn" class="primary-btn btn-sm" style="display:none; background: linear-gradient(135deg, #7c3aed, #4f46e5);">🎙️ Enter Meeting Room</button>
                         </div>
                     </div>
 
@@ -683,6 +687,91 @@
                         </div>
                     </div>
 
+                </section>
+
+                <!-- ═══════════════════════════════════════════
+                     MEETING ROOM VIEW
+                ═══════════════════════════════════════════ -->
+                <section id="view-meeting" class="view hidden">
+                    <div class="mr-room">
+
+                        <!-- Controls bar -->
+                        <div class="mr-topbar glass-card">
+                            <div class="mr-topbar-left">
+                                <h3 class="mr-room-title">🎙️ Strategy Session</h3>
+                                <span class="mr-room-subtitle" id="mr-repo-label">Loading analysis...</span>
+                            </div>
+                            <div class="mr-topbar-controls">
+                                <button id="mr-begin-btn" class="primary-btn btn-sm">▶ Begin Meeting</button>
+                                <button id="mr-pause-btn" class="secondary-btn btn-sm" style="display:none;">⏸ Pause</button>
+                                <button id="mr-skip-btn" class="secondary-btn btn-sm" style="display:none;">⏭ Skip</button>
+                                <button id="mr-mute-btn" class="secondary-btn btn-sm" title="Toggle voice">🔊 Voice On</button>
+                                <div class="mr-speed-wrap">
+                                    <label>Speed</label>
+                                    <input type="range" id="mr-speed" min="0.6" max="2" step="0.1" value="1">
+                                    <span id="mr-speed-val">1×</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Phase indicator -->
+                        <div class="mr-phase-bar" id="mr-phase-bar">
+                            <div class="mr-phase-step" id="mr-phase-openings">
+                                <span class="mr-ph-num">1</span><span>Opening Statements</span>
+                            </div>
+                            <div class="mr-phase-arrow">→</div>
+                            <div class="mr-phase-step" id="mr-phase-debate">
+                                <span class="mr-ph-num">2</span><span>Expert Debate</span>
+                            </div>
+                            <div class="mr-phase-arrow">→</div>
+                            <div class="mr-phase-step" id="mr-phase-qa">
+                                <span class="mr-ph-num">3</span><span>Q&amp;A</span>
+                            </div>
+                        </div>
+
+                        <!-- Conference table -->
+                        <div class="mr-table-wrap" id="mr-table-wrap">
+                            <!-- Table surface -->
+                            <div class="mr-table-oval">
+                                <div class="mr-table-logo">SDLC<br>Discovery<br>Engine</div>
+                            </div>
+                            <!-- Agent seats injected by JS into this container -->
+                            <div class="mr-agents-ring" id="mr-agents-ring"></div>
+                            <!-- User seat always at bottom centre -->
+                            <div class="mr-user-seat">
+                                <div class="mr-avatar mr-avatar-you">
+                                    <span class="mr-av-emoji">👤</span>
+                                </div>
+                                <div class="mr-av-name">You</div>
+                            </div>
+                        </div>
+
+                        <!-- Live transcript / speech bubble -->
+                        <div class="mr-speech-panel glass-card" id="mr-speech-panel">
+                            <div class="mr-speech-header" id="mr-speech-header">
+                                <span id="mr-speaker-emoji">🎯</span>
+                                <strong id="mr-speaker-name">Waiting to begin...</strong>
+                                <span class="mr-speaking-dots" id="mr-speaking-dots" style="display:none;"><span></span><span></span><span></span></span>
+                            </div>
+                            <div class="mr-speech-text" id="mr-speech-text">
+                                Click "Begin Meeting" to start the opening statements from all 16 agents, then watch them debate, and finally ask your own questions.
+                            </div>
+                            <!-- Transcript log -->
+                            <div class="mr-transcript-log" id="mr-transcript-log"></div>
+                        </div>
+
+                        <!-- Q&A input (visible during Q&A phase) -->
+                        <div class="mr-qa-panel glass-card" id="mr-qa-panel" style="display:none;">
+                            <h4 class="mr-qa-title">💬 Ask the Room a Question</h4>
+                            <p class="muted-text" style="font-size:0.82rem; margin-bottom:12px;">The most relevant expert will answer. Questions are routed by AI.</p>
+                            <div class="mr-qa-input-row">
+                                <input type="text" id="mr-question-input" class="mr-qa-input" placeholder="e.g. What's the biggest security risk? How long will the refactor take?">
+                                <button id="mr-ask-btn" class="primary-btn">Ask →</button>
+                            </div>
+                            <div class="mr-qa-log" id="mr-qa-log"></div>
+                        </div>
+
+                    </div>
                 </section>
 
             </div>
