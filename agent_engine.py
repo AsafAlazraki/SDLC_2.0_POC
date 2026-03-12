@@ -43,6 +43,179 @@ ANTHROPIC_RETRY_BASE_DELAY = 15  # seconds — doubles each retry (15, 30, 60)
 ANTHROPIC_LAUNCH_STAGGER = 4
 
 # ─────────────────────────────────────────────
+# Persona-Aware Context Filtering
+# ─────────────────────────────────────────────
+#
+# Each persona only needs a relevant slice of the codebase.
+# Sending every agent the full repo buries signal in noise.
+# Rules are evaluated in order: PRIORITY paths are scored higher;
+# SKIP paths are excluded unless nothing else is available.
+# A score of 0 means neutral (include but don't prioritise).
+
+# File path fragments that are HIGH signal for each persona
+PERSONA_PRIORITY_PATHS: Dict[str, List[str]] = {
+    "architect":          ["main", "app", "server", "router", "config", "settings", "schema",
+                           "model", "service", "manager", "factory", "registry", "bootstrap"],
+    "ba":                 ["route", "view", "controller", "handler", "endpoint", "workflow",
+                           "form", "template", "page", "component", "modal"],
+    "qa":                 ["test", "spec", "fixture", "mock", "stub", "conftest", "jest",
+                           "pytest", "__tests__", "e2e", "integration"],
+    "security":           ["auth", "login", "session", "token", "permission", "role", "secret",
+                           "key", "password", "crypto", "ssl", "cors", "middleware", "guard",
+                           "sanitize", "validate", "config", ".env", "requirements"],
+    "tech_docs":          ["readme", "docs", "doc", "changelog", "contributing", "license",
+                           "openapi", "swagger", "wiki", "guide", "runbook"],
+    "data_engineering":   ["model", "migration", "schema", "db", "database", "orm", "query",
+                           "repository", "store", "entity", "table", "index", "seed"],
+    "devops":             ["dockerfile", "docker-compose", ".yml", ".yaml", "ci", "cd",
+                           "deploy", "helm", "terraform", "ansible", "makefile", "workflow",
+                           "requirements", "package.json", "pipfile"],
+    "product_management": ["route", "view", "controller", "feature", "plan", "roadmap",
+                           "config", "settings", "analytics", "metric", "event"],
+    "ui_ux":              [".html", ".css", ".scss", ".sass", ".less", "component", "template",
+                           "style", "theme", "layout", "page", "view", "modal", "widget"],
+    "compliance":         ["auth", "log", "audit", "gdpr", "privacy", "consent", "pii",
+                           "user", "profile", "data", "retention", "delete", "export"],
+    "secops":             ["dockerfile", "requirements", "package.json", "go.mod", "pom.xml",
+                           "gemfile", "cargo.toml", ".github", "ci", "cd", "workflow",
+                           "secret", "key", "token", "credential", "env"],
+    "performance_engineer": ["route", "handler", "query", "cache", "db", "async", "await",
+                              "pool", "batch", "queue", "worker", "middleware", "index"],
+    "cost_analyst":       ["config", "settings", "requirements", "docker", "deploy", "infra",
+                           "terraform", "cloud", "aws", "gcp", "azure", "serverless"],
+    "api_designer":       ["route", "endpoint", "handler", "controller", "schema", "model",
+                           "serializer", "validator", "openapi", "swagger", "middleware"],
+    "tech_lead":          [],  # Tech lead reads everything — no filtering
+}
+
+# File path fragments to SKIP for each persona (low relevance, wastes tokens)
+PERSONA_SKIP_PATHS: Dict[str, List[str]] = {
+    "security":           [".css", ".scss", ".html", "readme", "changelog", "migration"],
+    "ui_ux":              ["migration", "test", "spec", "docker", "terraform", "requirements",
+                           ".sql", "schema", "seed"],
+    "devops":             [".css", ".scss", ".html", "migration", "test", "spec"],
+    "data_engineering":   [".css", ".scss", ".html", "test", "spec", "docker"],
+    "compliance":         [".css", ".scss", "migration", "test", "spec", "docker"],
+    "performance_engineer": [".css", ".scss", ".html", "readme", "changelog", "license"],
+    "cost_analyst":       [".css", ".scss", ".html", "test", "spec", "migration"],
+    "api_designer":       [".css", ".scss", "migration", "seed", "test", "spec"],
+    "architect":          [".css", ".scss", ".html", "test", "spec", "changelog", "license"],
+    "ba":                 ["test", "spec", "migration", "seed", "docker", "terraform"],
+    "qa":                 [".css", ".scss", "migration", "seed", "docker", "terraform"],
+    "tech_docs":          [],  # Tech docs needs everything to audit doc coverage
+    "product_management": ["test", "spec", "migration", "docker", "terraform"],
+    "secops":             [".css", ".scss", ".html", "migration", "seed"],
+    "tech_lead":          [],  # Tech lead reads everything
+}
+
+# Per-persona context cap — personas with targeted filtering can afford more chars
+PERSONA_CONTEXT_LIMITS: Dict[str, int] = {
+    "architect":          80_000,
+    "ba":                 60_000,
+    "qa":                 80_000,   # Needs to see all test files + the code under test
+    "security":           100_000,  # Needs deep auth/config + dependency files
+    "tech_docs":          60_000,
+    "data_engineering":   80_000,
+    "devops":             80_000,
+    "product_management": 50_000,
+    "ui_ux":              70_000,
+    "compliance":         70_000,
+    "secops":             100_000,  # Needs full dependency manifests + CI config
+    "performance_engineer": 80_000,
+    "cost_analyst":       50_000,
+    "api_designer":       80_000,
+    "tech_lead":          60_000,   # Sampled view across the whole codebase
+}
+
+
+def filter_context_for_persona(persona_key: str, raw_context: str) -> str:
+    """
+    Split raw_context (which is concatenated file blocks) back into individual
+    file blocks, score each by relevance to the persona, and return only the
+    most relevant content up to the persona's context limit.
+
+    File blocks are separated by the header written in clone_github_repo:
+        \\n======...======\\nFILE: path/to/file.ext\\n======...======\\n
+    """
+    if persona_key not in PERSONA_CONFIGS:
+        return raw_context[:ANTHROPIC_MAX_CONTEXT_CHARS]
+
+    limit = PERSONA_CONTEXT_LIMITS.get(persona_key, ANTHROPIC_MAX_CONTEXT_CHARS)
+    priority_hints = [p.lower() for p in PERSONA_PRIORITY_PATHS.get(persona_key, [])]
+    skip_hints = [s.lower() for s in PERSONA_SKIP_PATHS.get(persona_key, [])]
+
+    # Split into blocks — each starts with the ===FILE: header
+    block_pattern = re.compile(r'(={60}\nFILE: .+?\n={60}\n)', re.DOTALL)
+    parts = block_pattern.split(raw_context)
+
+    # Pair each header with its content
+    blocks: List[tuple] = []  # (header, content, filepath)
+    i = 0
+    while i < len(parts):
+        if block_pattern.match(parts[i]):
+            header = parts[i]
+            content = parts[i + 1] if i + 1 < len(parts) else ""
+            # Extract the file path from the header
+            fp_match = re.search(r'FILE: (.+)', header)
+            filepath = fp_match.group(1).lower() if fp_match else ""
+            blocks.append((header, content, filepath))
+            i += 2
+        else:
+            # Preamble text before the first file block — keep it
+            if parts[i].strip():
+                blocks.append(("", parts[i], "__preamble__"))
+            i += 1
+
+    def score(filepath: str) -> int:
+        """Higher = more relevant for this persona."""
+        if any(skip in filepath for skip in skip_hints):
+            return -1  # Exclude
+        score_val = 0
+        for hint in priority_hints:
+            if hint in filepath:
+                score_val += 10
+        return score_val
+
+    # Sort: preamble first, then by score descending, then by original order
+    scored = []
+    for idx, (header, content, filepath) in enumerate(blocks):
+        if filepath == "__preamble__":
+            s = 9999  # always first
+        else:
+            s = score(filepath)
+        scored.append((s, idx, header, content, filepath))
+
+    scored.sort(key=lambda x: (-x[0], x[1]))
+
+    # Fill up to the limit, skipping files scored -1
+    result_parts = []
+    total = 0
+    skipped_files = []
+    included_files = []
+
+    for s, idx, header, content, filepath in scored:
+        if s == -1:
+            skipped_files.append(filepath)
+            continue
+        block_len = len(header) + len(content)
+        if total + block_len > limit:
+            skipped_files.append(filepath)
+            continue
+        result_parts.append(header + content)
+        included_files.append(filepath)
+        total += block_len
+
+    context = "".join(result_parts)
+    if skipped_files:
+        context += (
+            f"\n\n[Context filtered for {PERSONA_CONFIGS[persona_key]['name']}: "
+            f"{len(included_files)} files included ({total:,} chars), "
+            f"{len(skipped_files)} files excluded as low-relevance for this role.]"
+        )
+    return context
+
+
+# ─────────────────────────────────────────────
 # GitHub Repository Ingestion
 # ─────────────────────────────────────────────
 
@@ -948,20 +1121,23 @@ Below is the codebase you are analysing. Study every file carefully, then produc
 
 Now produce your analysis. Be forensically specific — reference actual file paths, function names, and line-level patterns you observed. Write with the authority and precision of the world's best practitioner in your role. Every recommendation must be actionable, grounded in your research, and tailored to what you specifically found in THIS codebase."""
 
-    # ── Context truncation — prevents oversized prompts blowing token limits ──
-    truncated_context = code_context
+    # ── Persona-aware context filtering ────────────────────────────────────────
+    # Filter and rank files by relevance to this persona's domain before building
+    # the prompt. This replaces the old blunt head-truncation: every agent now
+    # gets a deep, relevant slice rather than a shallow scan of mixed noise.
     if model_type == "anthropic" and anthropic_api_key:
-        if len(code_context) > ANTHROPIC_MAX_CONTEXT_CHARS:
-            truncated_context = code_context[:ANTHROPIC_MAX_CONTEXT_CHARS]
-            truncated_context += f"\n\n[... CODEBASE TRUNCATED — {len(code_context):,} chars total, showing first {ANTHROPIC_MAX_CONTEXT_CHARS:,} chars to stay within token limits ...]"
-    elif len(code_context) > GEMINI_MAX_CONTEXT_CHARS:
-        truncated_context = code_context[:GEMINI_MAX_CONTEXT_CHARS]
-        truncated_context += f"\n\n[... CODEBASE TRUNCATED at {GEMINI_MAX_CONTEXT_CHARS:,} chars ...]"
+        filtered_context = filter_context_for_persona(persona_key, code_context)
+    else:
+        # Gemini agents: persona-filter first, then hard cap at GEMINI_MAX_CONTEXT_CHARS
+        filtered_context = filter_context_for_persona(persona_key, code_context)
+        if len(filtered_context) > GEMINI_MAX_CONTEXT_CHARS:
+            filtered_context = filtered_context[:GEMINI_MAX_CONTEXT_CHARS]
+            filtered_context += f"\n\n[... further truncated at {GEMINI_MAX_CONTEXT_CHARS:,} chars ...]"
 
-    # Rebuild prompt with (potentially) truncated context
+    # Rebuild prompt with persona-filtered context
     prompt = prompt.replace(
         f"--- BEGIN CODEBASE ---\n{code_context}\n--- END CODEBASE ---",
-        f"--- BEGIN CODEBASE ---\n{truncated_context}\n--- END CODEBASE ---"
+        f"--- BEGIN CODEBASE ---\n{filtered_context}\n--- END CODEBASE ---"
     )
 
     async def call_gemini(reason: str = "") -> str:
@@ -1135,19 +1311,29 @@ Specific, measurable outcomes to track across: engineering velocity (DORA), secu
 ### The Bottom Line
 If this organisation can only do THREE things this quarter, what are they and exactly why? Be direct. Commit to a recommendation. No hedging."""
 
-    # Synthesis uses the largest prompt — retry aggressively on rate limits
+    # Synthesis uses the largest prompt — retry aggressively on rate limits.
+    # Extended thinking is enabled: the model reasons through contradictions in
+    # a private scratchpad (budget_tokens) before writing its final answer.
+    # temperature must be 1 when thinking is enabled (API requirement).
+    THINKING_BUDGET = 8000   # tokens for internal reasoning
+    OUTPUT_BUDGET = 10000    # tokens for the final written report
     last_error = None
     for attempt in range(1, ANTHROPIC_MAX_RETRIES + 1):
         try:
             client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
             message = await client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=8192,
-                temperature=0.2,
+                max_tokens=THINKING_BUDGET + OUTPUT_BUDGET,
+                temperature=1,  # Required when extended thinking is enabled
+                thinking={"type": "enabled", "budget_tokens": THINKING_BUDGET},
                 system="You are a Principal CTO and technical advisor synthesising expert panel findings into a unified master action plan. Be authoritative, specific, and decisive. Resolve contradictions explicitly. Name files, tools, and patterns by name.",
                 messages=[{"role": "user", "content": prompt}]
             )
-            content = message.content[0].text
+            # Extract only the final text blocks — discard thinking scratchpad
+            content = "\n\n".join(
+                block.text for block in message.content
+                if block.type == "text"
+            )
             return {
                 "persona": "synthesis",
                 "name": SYNTHESIS_CONFIG["name"],
@@ -1192,6 +1378,100 @@ If this organisation can only do THREE things this quarter, what are they and ex
     }
 
 
+async def run_recon_agent(
+    gemini_api_key: str,
+    code_context: str,
+) -> Dict[str, Any]:
+    """
+    Reconnaissance pre-pass: a fast, lightweight Gemini call that reads the
+    codebase and returns a structured JSON summary. This summary is injected
+    into every persona agent's prompt as shared context, so agents skip the
+    'identify the tech stack' phase and dive straight into deep analysis.
+
+    Returns a dict with keys: tech_stack, architecture_style, key_files,
+    primary_language, frameworks, databases, entry_points, file_count,
+    total_chars, and raw_summary (human-readable paragraph).
+    """
+    # Send only a representative sample to keep the recon call fast and cheap
+    RECON_SAMPLE_CHARS = 80_000
+    sample = code_context[:RECON_SAMPLE_CHARS]
+    if len(code_context) > RECON_SAMPLE_CHARS:
+        sample += f"\n\n[Showing first {RECON_SAMPLE_CHARS:,} of {len(code_context):,} chars for reconnaissance]"
+
+    prompt = f"""You are a rapid codebase reconnaissance agent. Your job is NOT deep analysis — it is fast, accurate identification of what this codebase IS so that a team of specialist agents can immediately start deep analysis without wasting time on discovery.
+
+Read the codebase below and return ONLY a JSON object (no markdown, no explanation, just valid JSON) with exactly these fields:
+
+{{
+  "primary_language": "e.g. Python 3.11",
+  "frameworks": ["e.g. FastAPI", "React", "SQLAlchemy"],
+  "databases": ["e.g. PostgreSQL via Supabase", "Redis"],
+  "architecture_style": "e.g. Modular Monolith / Microservices / Serverless / MVC",
+  "deployment_model": "e.g. Docker on VPS / AWS Lambda / Heroku / Unknown",
+  "entry_points": ["e.g. main.py:app", "src/index.ts"],
+  "key_config_files": ["e.g. requirements.txt", ".env.example", "docker-compose.yml"],
+  "auth_mechanism": "e.g. JWT / Session cookies / API key / OAuth2 / None visible",
+  "test_framework": "e.g. pytest / Jest / None found",
+  "ci_cd": "e.g. GitHub Actions / GitLab CI / None found",
+  "estimated_complexity": "Low / Medium / High / Very High",
+  "notable_patterns": ["e.g. Repository pattern", "SSE streaming", "Agent-based architecture"],
+  "red_flags": ["e.g. Hardcoded secrets found in config.py", "No authentication on admin routes"],
+  "raw_summary": "2-3 sentence human-readable overview of what this system does and its current state"
+}}
+
+--- CODEBASE SAMPLE ---
+{sample}
+--- END SAMPLE ---
+
+Return ONLY the JSON object. No markdown fences, no explanation."""
+
+    try:
+        gemini_client = genai.Client(api_key=gemini_api_key)
+        response = await gemini_client.aio.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.1),  # Low temp for factual JSON
+        )
+        raw = response.text.strip()
+        # Strip markdown fences if the model added them anyway
+        raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw, flags=re.MULTILINE).strip()
+        recon_data = json.loads(raw)
+        recon_data["_recon_success"] = True
+        return recon_data
+    except Exception as e:
+        logger.warning(f"Recon agent failed ({e}), proceeding without recon context.")
+        return {"_recon_success": False, "raw_summary": "Reconnaissance unavailable."}
+
+
+def format_recon_for_prompt(recon: Dict[str, Any]) -> str:
+    """Render the recon JSON as a concise structured block for injection into agent prompts."""
+    if not recon.get("_recon_success"):
+        return ""
+    lines = [
+        "## Codebase Reconnaissance Summary (pre-computed — verified before your analysis begins)",
+        f"- **Language**: {recon.get('primary_language', 'Unknown')}",
+        f"- **Frameworks**: {', '.join(recon.get('frameworks', [])) or 'None identified'}",
+        f"- **Databases**: {', '.join(recon.get('databases', [])) or 'None identified'}",
+        f"- **Architecture**: {recon.get('architecture_style', 'Unknown')}",
+        f"- **Deployment**: {recon.get('deployment_model', 'Unknown')}",
+        f"- **Auth**: {recon.get('auth_mechanism', 'Unknown')}",
+        f"- **Testing**: {recon.get('test_framework', 'None found')}",
+        f"- **CI/CD**: {recon.get('ci_cd', 'None found')}",
+        f"- **Complexity**: {recon.get('estimated_complexity', 'Unknown')}",
+        f"- **Entry points**: {', '.join(recon.get('entry_points', [])) or 'Unknown'}",
+    ]
+    if recon.get("notable_patterns"):
+        lines.append(f"- **Notable patterns**: {', '.join(recon['notable_patterns'])}")
+    if recon.get("red_flags"):
+        lines.append(f"- **⚠️ Recon red flags**: {'; '.join(recon['red_flags'])}")
+    lines.append(f"\n**System overview**: {recon.get('raw_summary', '')}")
+    lines.append(
+        "\nUse the above as verified baseline context. Skip re-identifying the tech stack "
+        "and go straight to deep domain analysis."
+    )
+    return "\n".join(lines)
+
+
 async def run_agent_fleet(
     gemini_api_key: str,
     anthropic_api_key: str,
@@ -1216,6 +1496,25 @@ async def run_agent_fleet(
             }
         })
 
+    # ── Phase 0: Reconnaissance pre-pass ────────────────────────────────────
+    # A fast Gemini call produces a structured repo summary. This is injected
+    # into every agent's prompt so they skip the 'identify the stack' phase.
+    yield {
+        "event": "agent_update",
+        "data": {"key": "recon", "status": "thinking", "sub_status": "Running codebase reconnaissance..."}
+    }
+    recon_data = await run_recon_agent(gemini_api_key, code_context)
+    recon_context = format_recon_for_prompt(recon_data)
+    yield {
+        "event": "agent_update",
+        "data": {
+            "key": "recon",
+            "status": "complete",
+            "sub_status": recon_data.get("raw_summary", "Reconnaissance complete."),
+            "recon": recon_data,
+        }
+    }
+
     # ── Staggered launch — Gemini agents fire immediately (no shared rate limit).
     # Anthropic agents use wrapper coroutines with built-in stagger delays so ALL
     # tasks are created upfront (needed for as_completed to track them all).
@@ -1232,7 +1531,7 @@ async def run_agent_fleet(
             anthropic_api_key,
             code_context,
             client_context,
-            db_persona_prompts,
+            db_persona_prompts + ("\n\n" + recon_context if recon_context else ""),
             status_callback
         )
 

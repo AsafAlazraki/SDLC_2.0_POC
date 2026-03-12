@@ -268,12 +268,20 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (eventType === 'agent_update') {
+                // Recon pre-pass has no card — surface its progress in the fleet status bar
+                if (data.key === 'recon') {
+                    updateFleetStatusMessage(
+                        data.status === 'complete'
+                            ? `🔍 Reconnaissance complete — launching ${Object.keys(state.personaConfigs).length} agents...`
+                            : `🔍 ${data.sub_status || 'Running codebase reconnaissance...'}`
+                    );
+                }
                 const agentCard = document.getElementById(`status-${data.key}`);
                 if (agentCard) {
                     agentCard.className = `agent-status-card ${data.status}`;
                     const stateEl = agentCard.querySelector('.agent-state');
                     if (stateEl) stateEl.textContent = data.sub_status || data.status.toUpperCase();
-                    
+
                     if (data.status === 'thinking') {
                         if (!agentCard.querySelector('.thinking-spinner')) {
                             const spinner = document.createElement('div');
