@@ -32,6 +32,9 @@
                 <button class="nav-btn" data-target="how-it-works">
                     <span class="icon">💡</span> How it Works
                 </button>
+                <button class="nav-btn" data-target="history">
+                    <span class="icon">📚</span> History
+                </button>
                 <button class="nav-btn" data-target="admin" style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
                     <span class="icon">⚙️</span> Settings / Admin
                 </button>
@@ -53,6 +56,10 @@
                 <div class="status-item">
                     <span class="status-label">Anthropic API:</span>
                     <span id="anthropic-status" class="status-value">Checking...</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">GitHub:</span>
+                    <span id="github-status" class="status-value">Checking...</span>
                 </div>
             </header>
 
@@ -80,6 +87,44 @@
                                 </button>
                             </div>
                         </div>
+
+                        <!-- Business Context Panel -->
+                        <details id="biz-context-panel" style="margin-bottom: 24px;">
+                            <summary style="cursor: pointer; padding: 12px 16px; background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.25); border-radius: 10px; color: var(--text-main); font-weight: 600; font-size: 0.9rem; list-style: none; display: flex; align-items: center; gap: 8px;">
+                                <span>📋</span>
+                                <span>Business Context <span style="font-weight:400; color: var(--text-muted); font-size:0.8rem;">(optional but strongly recommended — feeds every agent)</span></span>
+                                <span style="margin-left: auto; font-size: 0.75rem; color: var(--text-muted);">▼ expand</span>
+                            </summary>
+                            <div style="border: 1px solid rgba(99,102,241,0.25); border-top: none; border-radius: 0 0 10px 10px; padding: 20px; background: rgba(10,10,20,0.4);">
+                                <p class="muted-text text-sm" style="margin-bottom: 16px;">This context is injected into every agent's prompt. The more you provide, the more targeted the output.</p>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                                    <div>
+                                        <label class="input-label" style="font-size:0.8rem;">Industry / Business Domain</label>
+                                        <input type="text" id="ctx-industry" placeholder="e.g. Financial Services, Healthcare, Retail" style="width:100%; margin-top:4px; padding: 10px 12px; background: rgba(10,10,15,0.6); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-main); font-size: 0.9rem;">
+                                    </div>
+                                    <div>
+                                        <label class="input-label" style="font-size:0.8rem;">Compliance / Regulatory Requirements</label>
+                                        <input type="text" id="ctx-compliance" placeholder="e.g. GDPR, HIPAA, SOC2, PCI-DSS" style="width:100%; margin-top:4px; padding: 10px 12px; background: rgba(10,10,15,0.6); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-main); font-size: 0.9rem;">
+                                    </div>
+                                    <div>
+                                        <label class="input-label" style="font-size:0.8rem;">Known Pain Points</label>
+                                        <textarea id="ctx-pain-points" placeholder="e.g. System crashes every quarter-end. Manual deployments take 2 days. No test coverage." style="width:100%; height:80px; margin-top:4px; padding: 10px 12px; background: rgba(10,10,15,0.6); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-main); font-size: 0.9rem; resize: vertical;"></textarea>
+                                    </div>
+                                    <div>
+                                        <label class="input-label" style="font-size:0.8rem;">Modernisation Goals & Constraints</label>
+                                        <textarea id="ctx-goals" placeholder="e.g. Move to AWS within 18 months. Budget £2M. Team of 8. Cannot take system offline." style="width:100%; height:80px; margin-top:4px; padding: 10px 12px; background: rgba(10,10,15,0.6); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-main); font-size: 0.9rem; resize: vertical;"></textarea>
+                                    </div>
+                                    <div>
+                                        <label class="input-label" style="font-size:0.8rem;">Stakeholder Notes</label>
+                                        <textarea id="ctx-stakeholders" placeholder="e.g. CTO wants microservices. CFO concerned about cost. 3 dev teams across 2 time zones." style="width:100%; height:80px; margin-top:4px; padding: 10px 12px; background: rgba(10,10,15,0.6); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-main); font-size: 0.9rem; resize: vertical;"></textarea>
+                                    </div>
+                                    <div>
+                                        <label class="input-label" style="font-size:0.8rem;">Current Team / Skills Available</label>
+                                        <textarea id="ctx-team" placeholder="e.g. 5 Java devs, 2 DevOps. No Kubernetes experience. Strong SQL skills." style="width:100%; height:80px; margin-top:4px; padding: 10px 12px; background: rgba(10,10,15,0.6); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-main); font-size: 0.9rem; resize: vertical;"></textarea>
+                                    </div>
+                                </div>
+                            </div>
+                        </details>
 
                         <div class="divider-line" style="border-bottom: 1px solid var(--border-subtle); margin: 20px 0; position: relative;">
                             <span style="position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: rgba(30,30,45,0.9); padding: 0 16px; color: var(--text-muted); font-size: 0.85rem;">OR paste / upload files</span>
@@ -120,6 +165,7 @@
                                 <h4 style="color: var(--primary); font-family: 'Space Grotesk', sans-serif; letter-spacing: 1px;">
                                     <span class="pulse-icon">📡</span> FLEET CONTROL CENTER
                                 </h4>
+                                <div id="fleet-status-message" style="font-size:0.8rem; color: var(--text-muted); margin-bottom: 6px; min-height: 1.2em;"></div>
                                 <div id="fleet-progress" class="fleet-progress-bar">
                                     <div id="fleet-progress-fill" class="progress-fill"></div>
                                 </div>
@@ -127,9 +173,11 @@
                             <div id="agent-status-grid" class="agent-status-grid"></div>
                         </div>
 
-                        <div class="dashboard-controls" style="margin-top: 20px; display: flex; gap: 10px; justify-content: flex-end;">
+                        <div class="dashboard-controls" style="margin-top: 20px; display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
                             <button id="collapse-all-btn" class="secondary-btn btn-sm">Collapse All</button>
                             <button id="expand-all-btn" class="secondary-btn btn-sm">Expand All</button>
+                            <button id="download-full-report-btn" class="secondary-btn btn-sm">⬇️ Download Full Report</button>
+                            <button id="generate-kickoff-btn" class="primary-btn btn-sm" style="background: linear-gradient(135deg, #f59e0b, #d97706);">🚀 Generate Team Kickoff Pack</button>
                         </div>
                     </div>
 
@@ -225,6 +273,62 @@
                             </div>
                             <div id="secops-content" class="report-content"></div>
                         </div>
+
+                        <div class="glass-card full-width report-card" id="report-performance_engineer" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">🚀 Performance Engineer</span>
+                            </div>
+                            <div id="performance_engineer-content" class="report-content"></div>
+                        </div>
+
+                        <div class="glass-card full-width report-card" id="report-cost_analyst" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">💰 Cost Optimisation Analyst</span>
+                            </div>
+                            <div id="cost_analyst-content" class="report-content"></div>
+                        </div>
+
+                        <div class="glass-card full-width report-card" id="report-api_designer" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">🔌 API Designer</span>
+                            </div>
+                            <div id="api_designer-content" class="report-content"></div>
+                        </div>
+
+                        <div class="glass-card full-width report-card" id="report-tech_lead" style="display: none;">
+                            <div class="report-card-header">
+                                <span class="persona-badge">🏆 Tech Lead</span>
+                            </div>
+                            <div id="tech_lead-content" class="report-content"></div>
+                        </div>
+
+                        <!-- The Verdict — Synthesis Agent (appears last, styled distinctly) -->
+                        <div class="glass-card full-width report-card verdict-card" id="report-synthesis" style="display: none;">
+                            <div class="report-card-header verdict-header">
+                                <span class="persona-badge verdict-badge">🎯 The Verdict — CTO Master Report</span>
+                                <span class="verdict-subtitle">Synthesised from all 15 specialist agents · Contradictions resolved · Unified action plan</span>
+                            </div>
+                            <div id="synthesis-content" class="report-content"></div>
+                        </div>
+                        <!-- Team Kickoff Pack (generated on demand) -->
+                        <div class="glass-card full-width report-card verdict-card" id="report-kickoff" style="display: none; border-left: 4px solid #f59e0b;">
+                            <div class="report-card-header verdict-header" style="background: linear-gradient(135deg, rgba(245,158,11,0.15), rgba(217,119,6,0.1));">
+                                <span class="persona-badge" style="color: #f59e0b;">🚀 Team Kickoff Pack — Mobilisation Brief</span>
+                                <span class="verdict-subtitle">Sprint 0 plan · Team composition · RACI · Day 1 decisions · Risk briefing</span>
+                            </div>
+                            <div id="kickoff-content" class="report-content"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- History View -->
+                <section id="view-history" class="view hidden fade-in">
+                    <div class="glass-card full-width">
+                        <h3>Analysis History</h3>
+                        <p class="muted-text" style="margin-bottom: 20px;">Past repository analyses saved automatically after each run.</p>
+                        <div id="history-list">
+                            <p class="muted-text">Loading history...</p>
+                        </div>
                     </div>
                 </section>
 
@@ -267,7 +371,7 @@
                             <div class="explainer-step">
                                 <div class="step-icon">🤖</div>
                                 <h5>2. Fleet Dispatch</h5>
-                                <p>We launch a fleet of 11+ specialized AI personas. Each agent is a distinct instance of either **Claude Sonnet 4.6** (for complex logic/strategy) or **Gemini 2.0 Flash** (for deep research and grounding).</p>
+                                <p>We launch a fleet of 15 specialized AI personas. Each agent is a distinct instance of either **Claude Sonnet 4.6** (for complex logic/strategy) or **Gemini 2.0 Flash** (for deep research and grounding).</p>
                             </div>
                             <div class="explainer-step">
                                 <div class="step-icon">🔍</div>
@@ -296,6 +400,31 @@
 
             </div>
         </main>
+    </div>
+
+    <!-- Q&A Chat Modal -->
+    <div id="chat-modal" class="modal-overlay" style="display:none;">
+        <div class="chat-modal-content glass-card">
+            <div class="modal-header">
+                <div class="modal-title-box">
+                    <span id="chat-modal-emoji" class="modal-emoji"></span>
+                    <div>
+                        <h3>Ask <span id="chat-modal-name">Agent</span></h3>
+                        <p class="muted-text text-sm" style="margin:0;">Follow-up questions based on this agent's analysis</p>
+                    </div>
+                </div>
+                <button class="close-modal" id="close-chat-btn">&times;</button>
+            </div>
+            <div id="chat-messages" class="chat-messages">
+                <div class="chat-placeholder muted-text text-sm">
+                    Ask anything about this agent's findings — "Why did you flag X?", "How do I fix finding #3?", "Give me more detail on the migration plan."
+                </div>
+            </div>
+            <div class="chat-input-area">
+                <input type="text" id="chat-input" placeholder="Ask a follow-up question..." autocomplete="off">
+                <button id="chat-send-btn" class="primary-btn">→</button>
+            </div>
+        </div>
     </div>
 
     <!-- Add Mermaid.js -->

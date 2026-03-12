@@ -7,7 +7,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const state = {
         geminiKey: localStorage.getItem('gemini_api_key') || '',
         activeClient: null,
-        personaConfigs: {}
+        personaConfigs: {},
+        reportContents: {},      // Stores each agent's raw content for Q&A chat
+        currentChatPersona: null // Which agent the chat modal is open for
     };
 
     // ─────────────────────────────────────────
@@ -37,6 +39,16 @@ document.addEventListener('DOMContentLoaded', () => {
                     anthropicStatus.innerHTML = '<span class="status-badge env">ENV SET</span>';
                 } else {
                     anthropicStatus.innerHTML = '<span class="status-badge error">MISSING</span>';
+                }
+            }
+
+            // GitHub Status
+            const githubStatus = document.getElementById('github-status');
+            if (githubStatus) {
+                if (config.has_github_token) {
+                    githubStatus.innerHTML = '<span class="status-badge env">TOKEN SET</span>';
+                } else {
+                    githubStatus.innerHTML = '<span class="status-badge error">MISSING</span>';
                 }
             }
         } catch(e) { console.error("Could not load config", e); }
@@ -151,9 +163,24 @@ document.addEventListener('DOMContentLoaded', () => {
     // ─────────────────────────────────────────
     const analyzeRepoBtn = document.getElementById('analyze-repo-btn');
     const repoLoader = document.getElementById('repo-loader');
-    const statusText = document.getElementById('discovery-status-text');
-    const statusDot = document.getElementById('status-dot');
     const agentStatusGrid = document.getElementById('agent-status-grid');
+
+    function collectBusinessContext() {
+        const parts = [];
+        const industry = document.getElementById('ctx-industry')?.value.trim();
+        const compliance = document.getElementById('ctx-compliance')?.value.trim();
+        const painPoints = document.getElementById('ctx-pain-points')?.value.trim();
+        const goals = document.getElementById('ctx-goals')?.value.trim();
+        const stakeholders = document.getElementById('ctx-stakeholders')?.value.trim();
+        const team = document.getElementById('ctx-team')?.value.trim();
+        if (industry) parts.push(`Industry/Domain: ${industry}`);
+        if (compliance) parts.push(`Compliance Requirements: ${compliance}`);
+        if (painPoints) parts.push(`Known Pain Points: ${painPoints}`);
+        if (goals) parts.push(`Modernisation Goals & Constraints: ${goals}`);
+        if (stakeholders) parts.push(`Stakeholder Context: ${stakeholders}`);
+        if (team) parts.push(`Current Team & Skills: ${team}`);
+        return parts.join('\n');
+    }
 
     analyzeRepoBtn?.addEventListener('click', async () => {
         const githubUrl = document.getElementById('github-url').value.trim();
@@ -165,11 +192,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         analyzeRepoBtn.disabled = true;
         if (repoLoader) repoLoader.style.display = "inline-block";
-        if (statusDot) statusDot.classList.replace('blinking', 'processing');
-        if (statusText) statusText.innerText = "Initializing AI Fleet...";
 
         resetReport();
         document.querySelector('[data-target="report"]').click();
+
+        const additionalContext = collectBusinessContext();
 
         try {
             const response = await fetch('/api/analyze-repo', {
@@ -178,7 +205,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify({
                     github_url: githubUrl,
                     gemini_api_key: state.geminiKey,
-                    client_id: state.activeClient || null
+                    client_id: state.activeClient || null,
+                    additional_context: additionalContext || null
                 })
             });
 
@@ -206,11 +234,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         } catch (e) {
             console.error("Discovery error", e);
-            if (statusText) statusText.innerText = "Connection Error";
         } finally {
             analyzeRepoBtn.disabled = false;
             if (repoLoader) repoLoader.style.display = "none";
-            if (statusDot) statusDot.classList.replace('processing', 'blinking');
         }
     });
 
@@ -219,13 +245,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = JSON.parse(eventData);
 
             if (eventType === 'status') {
-                if (statusText) statusText.innerText = data.message;
+                updateFleetStatusMessage(data.message);
                 if (data.phase === 'agents_launched' && data.agents) {
                     updateStatusGrid(data.agents);
                 }
                 if (data.phase === 'complete') {
                     setTimeout(() => {
-                        if (statusText) statusText.innerText = "Discovery Complete ✓";
+                        updateFleetStatusMessage("Discovery Complete ✓");
                         const fill = document.getElementById('fleet-progress-fill');
                         if (fill) fill.style.width = '100%';
                     }, 500);
@@ -234,7 +260,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (eventType === 'agent_result') {
                 renderAgentResult(data);
-                const total = 11; 
+                const total = 16; // 15 personas + 1 synthesis
                 const doneCount = document.querySelectorAll('.agent-status-card.done').length;
                 const progress = (doneCount / total) * 100;
                 const progressFill = document.getElementById('fleet-progress-fill');
@@ -262,9 +288,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (eventType === 'error') {
-                if (statusText) statusText.innerText = `Error: ${data.message}`;
+                updateFleetStatusMessage(`Error: ${data.message}`);
             }
         } catch(e) { console.error("SSE parse error", e); }
+    }
+
+    function updateFleetStatusMessage(msg) {
+        const el = document.getElementById('fleet-status-message');
+        if (el) el.textContent = msg;
     }
 
     function updateStatusGrid(agents) {
@@ -327,7 +358,49 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 header.dataset.listener = "true";
                 
-                // Secondary click for Profile Modal
+                // "Ask" button — opens Q&A chat for this agent
+                const askBtn = document.createElement('button');
+                askBtn.className = 'ask-btn';
+                askBtn.innerText = '💬 Ask';
+                askBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    openChatModal(result.persona);
+                });
+                header.insertBefore(askBtn, icon);
+
+                // Copy to clipboard button
+                const copyBtn = document.createElement('button');
+                copyBtn.className = 'copy-btn';
+                copyBtn.title = 'Copy to clipboard';
+                copyBtn.innerText = '📋';
+                copyBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(state.reportContents[result.persona] || '').then(() => {
+                        copyBtn.innerText = '✅';
+                        setTimeout(() => { copyBtn.innerText = '📋'; }, 1500);
+                    });
+                });
+                header.insertBefore(copyBtn, askBtn);
+
+                // Download markdown button
+                const dlBtn = document.createElement('button');
+                dlBtn.className = 'copy-btn';
+                dlBtn.title = 'Download as Markdown';
+                dlBtn.innerText = '⬇️';
+                dlBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const content = state.reportContents[result.persona] || '';
+                    const blob = new Blob([content], { type: 'text/markdown' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `sdlc-discovery-${result.persona}.md`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                });
+                header.insertBefore(dlBtn, copyBtn);
+
+                // Profile info link
                 const profileHint = document.createElement('span');
                 profileHint.className = 'profile-link';
                 profileHint.innerText = 'Info';
@@ -338,8 +411,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     e.stopPropagation();
                     openPersonaModal(result.persona);
                 });
-                header.insertBefore(profileHint, icon);
+                header.insertBefore(profileHint, dlBtn);
             }
+
+            // Store content for Q&A chat context
+            state.reportContents[result.persona] = result.content || '';
+            state.lastAnalyzedUrl = document.getElementById('github-url')?.value.trim() || '[local upload]';
 
             const contentEl = document.getElementById(`${result.persona}-content`);
             if (contentEl) {
@@ -354,6 +431,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (result.persona === 'architect' && result.status === 'success') {
                 extractAndRenderMermaid(result.content);
+            }
+
+            // BA card: GitHub Issues export + CSV download
+            if (result.persona === 'ba' && result.status === 'success') {
+                const header = reportCard.querySelector('.report-card-header');
+                if (header && !header.querySelector('.gh-export-btn')) {
+                    const exportBtn = document.createElement('button');
+                    exportBtn.className = 'gh-export-btn secondary-btn btn-sm';
+                    exportBtn.innerText = '🐙 Export to GitHub Issues';
+                    exportBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        exportToGitHubIssues(result.content);
+                    });
+                    header.appendChild(exportBtn);
+
+                    const csvBtn = document.createElement('button');
+                    csvBtn.className = 'secondary-btn btn-sm';
+                    csvBtn.innerText = '📊 Download Backlog CSV';
+                    csvBtn.title = 'Export backlog as CSV for Jira import';
+                    csvBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        exportBacklogCSV(result.content);
+                    });
+                    header.appendChild(csvBtn);
+                }
             }
         }
     }
@@ -528,7 +630,334 @@ document.addEventListener('DOMContentLoaded', () => {
         if (agentStatusGrid) agentStatusGrid.innerHTML = '';
         const mermaidWrapper = document.getElementById('mermaid-wrapper');
         if (mermaidWrapper) mermaidWrapper.style.display = 'none';
+        updateFleetStatusMessage('');
+        state.reportContents = {};
+        state.lastAnalyzedUrl = null;
     }
+
+    // ─────────────────────────────────────────
+    // Q&A Chat Modal
+    // ─────────────────────────────────────────
+    const chatModal = document.getElementById('chat-modal');
+    const closeChatBtn = document.getElementById('close-chat-btn');
+    const chatSendBtn = document.getElementById('chat-send-btn');
+    const chatInput = document.getElementById('chat-input');
+    const chatMessages = document.getElementById('chat-messages');
+
+    function openChatModal(personaKey) {
+        const allConfigs = { ...state.personaConfigs, synthesis: { name: 'The Verdict', emoji: '🎯' } };
+        const config = allConfigs[personaKey] || { name: personaKey, emoji: '🤖' };
+        state.currentChatPersona = personaKey;
+        document.getElementById('chat-modal-emoji').innerText = config.emoji || '🤖';
+        document.getElementById('chat-modal-name').innerText = config.name || personaKey;
+        chatMessages.innerHTML = '<div class="chat-placeholder muted-text text-sm">Ask anything about this agent\'s findings...</div>';
+        if (chatInput) chatInput.value = '';
+        chatModal.style.display = 'flex';
+        chatInput?.focus();
+    }
+
+    closeChatBtn?.addEventListener('click', () => { chatModal.style.display = 'none'; });
+    window.addEventListener('click', (e) => { if (e.target === chatModal) chatModal.style.display = 'none'; });
+
+    async function sendChatMessage() {
+        const question = chatInput?.value.trim();
+        if (!question || !state.currentChatPersona) return;
+
+        chatInput.value = '';
+        chatInput.disabled = true;
+        chatSendBtn.disabled = true;
+
+        // Remove placeholder
+        chatMessages.querySelector('.chat-placeholder')?.remove();
+
+        // User bubble
+        const userBubble = document.createElement('div');
+        userBubble.className = 'chat-bubble user-bubble';
+        userBubble.innerText = question;
+        chatMessages.appendChild(userBubble);
+
+        // Agent typing indicator
+        const typingEl = document.createElement('div');
+        typingEl.className = 'chat-bubble agent-bubble typing';
+        typingEl.innerText = '...';
+        chatMessages.appendChild(typingEl);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+
+        try {
+            const res = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    persona_key: state.currentChatPersona,
+                    question,
+                    agent_report: state.reportContents[state.currentChatPersona] || ''
+                })
+            });
+            const data = await res.json();
+            typingEl.className = 'chat-bubble agent-bubble';
+            typingEl.innerHTML = simpleMarkdown(data.response || data.detail || 'No response.');
+        } catch (e) {
+            typingEl.className = 'chat-bubble agent-bubble error';
+            typingEl.innerText = 'Network error — could not reach the agent.';
+        } finally {
+            chatInput.disabled = false;
+            chatSendBtn.disabled = false;
+            chatInput.focus();
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+    }
+
+    chatSendBtn?.addEventListener('click', sendChatMessage);
+    chatInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChatMessage(); });
+
+    // ─────────────────────────────────────────
+    // GitHub Issues Export
+    // ─────────────────────────────────────────
+    async function exportToGitHubIssues(baContent) {
+        const githubUrl = document.getElementById('github-url')?.value.trim();
+        if (!githubUrl) {
+            alert('GitHub URL not found. Please re-run the analysis first.');
+            return;
+        }
+
+        // Parse stories using the same regex as renderJiraBacklog
+        const storyRegex = /\*\*Title\*\*:\s*(.*?)\n\*\*Story Points\*\*:\s*(\d+)\n\*\*User Story\*\*:\s*(.*?)\n\*\*Acceptance Criteria\*\*:\s*([\s\S]*?)(?=\n\*\*Title\*\*|\n---|$)/g;
+        const stories = [];
+        let match;
+        while ((match = storyRegex.exec(baContent)) !== null) {
+            const pts = parseInt(match[2].trim());
+            const acRaw = match[4].trim();
+            const acLines = acRaw.split('\n').map(l => l.replace(/^[-*]\s*/, '').trim()).filter(Boolean);
+            stories.push({
+                title: match[1].trim(),
+                story: match[3].trim(),
+                ac: acLines,
+                points: pts,
+                priority: pts > 8 ? 'high' : pts > 3 ? 'med' : 'low'
+            });
+        }
+
+        if (stories.length === 0) {
+            alert('No structured stories found in the BA report to export.');
+            return;
+        }
+
+        if (!confirm(`Export ${stories.length} user stories as GitHub Issues to ${githubUrl}?\n\nThis requires GITHUB_TOKEN to be set in your .env file.`)) return;
+
+        try {
+            const res = await fetch('/api/create-github-issues', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ github_url: githubUrl, stories })
+            });
+            const result = await res.json();
+            if (!res.ok) {
+                alert(`Error: ${result.detail}`);
+                return;
+            }
+            const msg = `✅ Created ${result.created.length} issues.\n${result.failed.length > 0 ? `⚠️ ${result.failed.length} failed.` : ''}\n\nFirst issue: ${result.created[0]?.url || ''}`;
+            alert(msg);
+        } catch (e) {
+            alert('Network error during GitHub Issues export.');
+        }
+    }
+
+    function exportBacklogCSV(baContent) {
+        const storyRegex = /\*\*Title\*\*:\s*(.*?)\n\*\*Story Points\*\*:\s*(\d+)\n\*\*User Story\*\*:\s*(.*?)\n\*\*Acceptance Criteria\*\*:\s*([\s\S]*?)(?=\n\*\*Title\*\*|\n---|$)/g;
+        const rows = [['Summary', 'Story Points', 'User Story', 'Acceptance Criteria', 'Issue Type', 'Priority']];
+        let match;
+        while ((match = storyRegex.exec(baContent)) !== null) {
+            const pts = parseInt(match[2].trim());
+            const priority = pts > 8 ? 'High' : pts > 3 ? 'Medium' : 'Low';
+            const acLines = match[4].trim().split('\n').map(l => l.replace(/^[-*]\s*/, '').trim()).filter(Boolean).join(' | ');
+            rows.push([
+                `"${match[1].trim().replace(/"/g, '""')}"`,
+                pts,
+                `"${match[3].trim().replace(/"/g, '""')}"`,
+                `"${acLines.replace(/"/g, '""')}"`,
+                'Story',
+                priority
+            ]);
+        }
+        if (rows.length <= 1) { alert('No structured stories found to export.'); return; }
+        const csv = rows.map(r => r.join(',')).join('\n');
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'sdlc-backlog.csv';
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+
+    // ─────────────────────────────────────────
+    // History View
+    // ─────────────────────────────────────────
+    async function loadHistory() {
+        const historyList = document.getElementById('history-list');
+        if (!historyList) return;
+        try {
+            const res = await fetch('/api/reports');
+            const reports = await res.json();
+
+            if (!reports || reports.length === 0) {
+                historyList.innerHTML = '<p class="muted-text">No past analyses yet. Run an analysis to see history here.</p>';
+                return;
+            }
+
+            historyList.innerHTML = reports.map(r => `
+                <div class="history-item" data-id="${r.id}">
+                    <div class="history-item-main">
+                        <span class="history-repo">${r.github_url}</span>
+                        <span class="history-date muted-text text-sm">${new Date(r.analyzed_at).toLocaleString()}</span>
+                    </div>
+                    <button class="secondary-btn btn-sm history-load-btn" data-id="${r.id}">Load Report →</button>
+                </div>
+            `).join('');
+
+            historyList.querySelectorAll('.history-load-btn').forEach(btn => {
+                btn.addEventListener('click', () => loadHistoryReport(parseInt(btn.dataset.id)));
+            });
+        } catch (e) {
+            historyList.innerHTML = '<p class="muted-text">Could not load history (Supabase reports table may not exist yet — see CLAUDE.md for setup SQL).</p>';
+        }
+    }
+
+    async function loadHistoryReport(reportId) {
+        try {
+            const res = await fetch(`/api/reports/${reportId}`);
+            const report = await res.json();
+            if (!report || !report.results) { alert('Report data not found.'); return; }
+
+            resetReport();
+            document.querySelector('[data-target="report"]').click();
+
+            // Re-render each agent result from saved data
+            for (const [persona, content] of Object.entries(report.results)) {
+                renderAgentResult({ persona, name: persona, emoji: '📋', status: 'success', content });
+            }
+
+            // Re-render synthesis if saved
+            if (report.synthesis_content) {
+                renderAgentResult({ persona: 'synthesis', name: 'The Verdict', emoji: '🎯', status: 'success', content: report.synthesis_content });
+            }
+
+            const statusText = document.getElementById('discovery-status-text');
+            if (statusText) statusText.innerText = `Loaded from history · ${report.github_url}`;
+        } catch (e) {
+            alert('Could not load this report.');
+        }
+    }
+
+    // Reload history every time the history view is activated
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+        if (btn.dataset.target === 'history') {
+            btn.addEventListener('click', loadHistory);
+        }
+    });
+
+    // ─────────────────────────────────────────
+    // Download Full Report
+    // ─────────────────────────────────────────
+    document.getElementById('download-full-report-btn')?.addEventListener('click', () => {
+        const parts = [];
+        const githubUrl = state.lastAnalyzedUrl || 'Unknown repository';
+        parts.push(`# SDLC Discovery Report\n**Repository:** ${githubUrl}\n**Generated:** ${new Date().toLocaleString()}\n\n---\n`);
+
+        for (const [persona, content] of Object.entries(state.reportContents)) {
+            const config = state.personaConfigs[persona] || { name: persona, emoji: '🤖' };
+            parts.push(`\n\n# ${config.emoji} ${config.name}\n\n${content}\n\n---`);
+        }
+
+        if (!parts.length) { alert('No report content to download yet. Run an analysis first.'); return; }
+
+        const blob = new Blob([parts.join('\n')], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `sdlc-discovery-report-${Date.now()}.md`;
+        a.click();
+        URL.revokeObjectURL(url);
+    });
+
+    // ─────────────────────────────────────────
+    // Team Kickoff Pack Generator
+    // ─────────────────────────────────────────
+    document.getElementById('generate-kickoff-btn')?.addEventListener('click', async () => {
+        const synthesisContent = state.reportContents['synthesis'];
+        if (!synthesisContent) {
+            alert('Please complete a full analysis first (the Synthesis / Verdict agent must finish).');
+            return;
+        }
+
+        const btn = document.getElementById('generate-kickoff-btn');
+        btn.disabled = true;
+        btn.textContent = '⏳ Generating Kickoff Pack...';
+
+        // Build agent summaries (first 500 chars of each)
+        const agentSummaries = {};
+        for (const [persona, content] of Object.entries(state.reportContents)) {
+            if (persona !== 'synthesis' && content) {
+                agentSummaries[persona] = content.substring(0, 500);
+            }
+        }
+
+        try {
+            const res = await fetch('/api/generate-kickoff-pack', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    synthesis_content: synthesisContent,
+                    agent_summaries: agentSummaries,
+                    github_url: state.lastAnalyzedUrl || null,
+                    business_context: collectBusinessContext() || null
+                })
+            });
+
+            const data = await res.json();
+            if (!res.ok) {
+                alert(`Error: ${data.detail}`);
+                return;
+            }
+
+            const kickoffCard = document.getElementById('report-kickoff');
+            const kickoffContent = document.getElementById('kickoff-content');
+            if (kickoffCard && kickoffContent) {
+                kickoffContent.innerHTML = simpleMarkdown(data.content);
+                kickoffCard.style.display = 'block';
+                kickoffCard.classList.add('fade-in');
+                kickoffCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+                // Store for download
+                state.reportContents['kickoff'] = data.content;
+
+                // Add download button to kickoff card header
+                const header = kickoffCard.querySelector('.report-card-header');
+                if (header && !header.querySelector('.kickoff-dl-btn')) {
+                    const dlBtn = document.createElement('button');
+                    dlBtn.className = 'kickoff-dl-btn secondary-btn btn-sm';
+                    dlBtn.innerText = '⬇️ Download Pack';
+                    dlBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        const blob = new Blob([data.content], { type: 'text/markdown' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'team-kickoff-pack.md';
+                        a.click();
+                        URL.revokeObjectURL(url);
+                    });
+                    header.appendChild(dlBtn);
+                }
+            }
+        } catch (e) {
+            alert('Network error generating kickoff pack.');
+            console.error(e);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '🚀 Generate Team Kickoff Pack';
+        }
+    });
 
     // ─────────────────────────────────────────
     // Collapse / Expand All
@@ -606,36 +1035,71 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // ─────────────────────────────────────────
-    // Legacy File/Text Analysis (Keep for Compatibility)
+    // File / Text Analysis via Full SSE Fleet
     // ─────────────────────────────────────────
     const analyzeBtn = document.getElementById('analyze-btn');
     const assetInput = document.getElementById('asset-input');
+    const folderUpload = document.getElementById('folder-upload');
+    const fileListEl = document.getElementById('file-list');
+
+    // Show selected file count when folder is chosen
+    folderUpload?.addEventListener('change', () => {
+        const count = folderUpload.files?.length || 0;
+        if (fileListEl) {
+            fileListEl.textContent = count > 0 ? `${count} file(s) selected` : '';
+        }
+    });
 
     analyzeBtn?.addEventListener('click', async () => {
         const payloadText = assetInput.value.trim();
-        if(!payloadText) { alert("Please provide input text."); return; }
+        const uploadedFiles = folderUpload?.files;
+        if(!payloadText && (!uploadedFiles || uploadedFiles.length === 0)) {
+            alert("Please provide input text or upload files.");
+            return;
+        }
+
         analyzeBtn.disabled = true;
-        
+        analyzeBtn.innerHTML = 'Launching Fleet... <span class="loader" style="display:inline-block;"></span>';
+
         resetReport();
         document.querySelector('[data-target="report"]').click();
 
-        try {
-            const formData = new FormData();
-            formData.append('apiKey', state.geminiKey);
-            if (payloadText) formData.append('text_context', payloadText);
-            
-            const response = await fetch('/api/analyze', { method: 'POST', body: formData });
-            const data = await response.json();
+        const additionalContext = collectBusinessContext();
 
-            if (data.status === 'success') {
-                for (const [persona, content] of Object.entries(data.results)) {
-                    renderAgentResult({ persona, name: persona, emoji: '🤖', status: 'success', content });
+        const formData = new FormData();
+        if (state.geminiKey) formData.append('gemini_api_key', state.geminiKey);
+        if (payloadText) formData.append('text_context', payloadText);
+        if (additionalContext) formData.append('additional_context', additionalContext);
+        if (state.activeClient) formData.append('client_id', state.activeClient);
+        if (uploadedFiles) {
+            for (const f of uploadedFiles) formData.append('files', f);
+        }
+
+        try {
+            const response = await fetch('/api/analyze-files', { method: 'POST', body: formData });
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n');
+                let eventType = null;
+                for (const line of lines) {
+                    if (line.startsWith('event: ')) {
+                        eventType = line.substring(7).trim();
+                    } else if (line.startsWith('data: ')) {
+                        handleSSEEvent(eventType, line.substring(6).trim());
+                        eventType = null;
+                    }
                 }
             }
         } catch (e) {
-            console.error("Legacy API error", e);
+            console.error("File analysis error", e);
         } finally {
             analyzeBtn.disabled = false;
+            analyzeBtn.textContent = 'Run Legacy Analysis';
         }
     });
 

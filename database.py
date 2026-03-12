@@ -51,6 +51,45 @@ def create_persona_db(persona: PersonaModel):
     }).execute()
     return response.data[0] if response.data else None
 
+# --- Reports ---
+
+def save_report(github_url: str, client_id, results: dict, synthesis_content: str = "") -> dict:
+    """Save a completed analysis run to the reports table."""
+    try:
+        data = {"github_url": github_url, "results": results, "synthesis_content": synthesis_content}
+        if client_id:
+            data["client_id"] = client_id
+        response = supabase.table("reports").insert(data).execute()
+        return response.data[0] if response.data else {}
+    except Exception as e:
+        print(f"Report save error (non-fatal): {e}")
+        return {}
+
+def get_reports() -> list:
+    """List past analysis runs — metadata only (no full results payload)."""
+    try:
+        response = (
+            supabase.table("reports")
+            .select("id, github_url, client_id, analyzed_at")
+            .order("analyzed_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        return response.data or []
+    except Exception as e:
+        print(f"Get reports error: {e}")
+        return []
+
+def get_report(report_id: int) -> dict:
+    """Return a specific saved report including full results."""
+    try:
+        response = supabase.table("reports").select("*").eq("id", report_id).execute()
+        return response.data[0] if response.data else None
+    except Exception as e:
+        print(f"Get report error: {e}")
+        return None
+
+
 def seed_default_personas():
     """Seed the database with the comprehensive personas if any are missing"""
     existing_personas = get_personas()
