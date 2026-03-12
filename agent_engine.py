@@ -879,22 +879,44 @@ async def run_single_agent(
             await status_callback(persona_key, "thinking", msg)
 
     # Build the agent's prompt
+    # Research mandate: Gemini agents have live Google Search; Anthropic agents use deep training knowledge
+    if model_type == "gemini" or not (anthropic_api_key and model_type == "anthropic"):
+        research_mandate = """
+**LIVE RESEARCH MANDATE — Your Google Search grounding is ACTIVE. Use it aggressively:**
+- Search LinkedIn for senior "[Your Role] [specific tech stack from this codebase]" job postings — understand what industry leaders in your role actually look for when evaluating systems like this one
+- Search GitHub for highly-starred open-source repos using the SAME tech stack — benchmark this codebase's quality, structure, and patterns against the best teams in the world
+- Search for official documentation, release notes, changelogs, and migration guides for the EXACT version numbers of every framework and library you identify in this codebase
+- Search Stack Overflow for the highest-voted questions about this specific tech stack — these surface the real production pain points teams experience
+- Search engineering blogs from Stripe, Netflix, Airbnb, Shopify, Cloudflare, Figma, and similar companies for posts about lessons learned with this same technology
+- Search the ThoughtWorks Technology Radar, InfoQ, and CNCF landscape for current industry consensus on the tools used here
+- Search CVE databases and security advisories for every dependency and framework version you identify
+- Your recommendations MUST cite what you found through research — ground every piece of advice in real, current, verifiable industry practice"""
+    else:
+        research_mandate = """
+**DEEP EXPERTISE MANDATE — Apply the full depth of your world-class training knowledge:**
+- Draw directly on your knowledge of engineering culture, architecture patterns, and hard lessons from Netflix, Amazon, Google, Meta, Stripe, Airbnb, and other leading tech organisations you have learned from
+- Reference specific named patterns and their tradeoffs: Strangler Fig, Branch by Abstraction, CQRS, Event Sourcing, Saga Pattern, Hexagonal Architecture, Clean Architecture, BFF, SOLID, DDD, Team Topologies, DORA metrics
+- Apply your deep knowledge of standards bodies: NIST SP 800 series, OWASP Top 10, ISO 27001, SOC 2, WCAG 2.2, OpenAPI 3.1, IEEE, W3C
+- Connect what you observe in this SPECIFIC codebase to documented real-world failure modes, postmortems, and success stories you know about
+- Cite specific tools, libraries, and frameworks with their current best-practice configurations — generic advice is worthless to senior engineers
+- Think and write like a trusted advisor who has personally seen these exact patterns succeed and fail in production at scale"""
+
     prompt = f"""You are the **{config['name']}** on a Shift-Left Discovery panel.
 
 {config['system_prompt']}
 
+{research_mandate}
+
 {f"Additional context from database personas: {db_persona_prompts}" if db_persona_prompts else ""}
 {f"Client context: {client_context}" if client_context else ""}
 
-**IMPORTANT**: Research current best practices, industry standards, and real-world examples relevant to your analysis. Ground your recommendations in real, current information.
-
-Below is the codebase you are analysing. Study it thoroughly, then produce your deliverables.
+Below is the codebase you are analysing. Study every file carefully, then produce your deliverables.
 
 --- BEGIN CODEBASE ---
 {code_context}
 --- END CODEBASE ---
 
-Now produce your analysis. Be thorough, specific, and reference actual file paths and code patterns you observed. Write as a senior professional in your role would — with authority, specificity, and actionable recommendations."""
+Now produce your analysis. Be forensically specific — reference actual file paths, function names, and line-level patterns you observed. Write with the authority and precision of the world's best practitioner in your role. Every recommendation must be actionable, grounded in your research, and tailored to what you specifically found in THIS codebase."""
 
     try:
         await update_status("Analyzing Source Code...")
@@ -944,6 +966,108 @@ Now produce your analysis. Be thorough, specific, and reference actual file path
         }
 
 
+# ─────────────────────────────────────────────
+# Synthesis Agent — "The Verdict"
+# Runs after all 15 personas complete, reads every report, resolves contradictions
+# ─────────────────────────────────────────────
+
+SYNTHESIS_CONFIG = {
+    "name": "The Verdict",
+    "emoji": "🎯",
+    "model": "anthropic",
+}
+
+
+async def run_synthesis_agent(
+    collected_results: Dict[str, str],
+    anthropic_api_key: str,
+) -> Dict[str, Any]:
+    """Read all 15 persona reports and produce a CTO-level master action plan."""
+    if not anthropic_api_key:
+        return {
+            "persona": "synthesis",
+            "name": SYNTHESIS_CONFIG["name"],
+            "emoji": SYNTHESIS_CONFIG["emoji"],
+            "status": "error",
+            "content": "Synthesis requires the Anthropic API key (ANTHROPIC_API_KEY) to be set in .env."
+        }
+
+    agent_names = {k: v["name"] for k, v in PERSONA_CONFIGS.items()}
+    all_reports = "\n\n".join([
+        f"{'═' * 60}\n{agent_names.get(key, key).upper()} REPORT\n{'═' * 60}\n{content}"
+        for key, content in collected_results.items()
+        if content and content.strip()
+    ])
+
+    prompt = f"""You have received independent analysis reports from a 15-agent expert panel — each a world-class specialist who has deeply analysed the same codebase. Your role is Chief Technology Officer and Principal Advisor.
+
+Read ALL reports below. Your job is to synthesise their findings, resolve contradictions, identify the highest-confidence themes, close blind spots, and produce a single authoritative Master Report.
+
+--- ALL 15 AGENT REPORTS ---
+{all_reports}
+--- END OF ALL REPORTS ---
+
+Now produce your Master Report with EXACTLY these sections:
+
+### Executive Summary
+Three paragraphs for a CTO or board audience: (1) What is this system and its current state, (2) The 3 most critical risks that multiple experts independently flagged, (3) Recommended path forward with expected outcomes.
+
+### Consensus Findings — Validated by 3+ Independent Agents
+List every finding that three or more agents independently identified — these are the highest-confidence priorities. For each: which agents flagged it, what they all agreed on, and the combined severity.
+
+### Cross-Agent Contradictions Resolved
+Identify where agents disagreed (e.g. Performance recommending aggressive caching vs Security flagging it as a risk vector). For each contradiction: state it clearly, give your definitive recommendation, and explain the reasoning.
+
+### Blind Spots — What the Panel Missed
+2–3 important considerations that the 15-agent panel collectively missed or underweighted. These are often the risks that cause modernisation programmes to fail.
+
+### The Critical Path — Unified Prioritised Action Plan
+A single list of actions across all 15 domains, prioritised by risk, value, and technical dependency:
+
+**This Sprint (Critical — Do Now):** Blockers, critical security risks, legal exposure
+**This Quarter (High ROI):** High-value improvements with manageable risk
+**Next Quarter (Strategic):** Changes requiring foundational work first
+**Long Term (Visionary):** Structural investments with 6–12 month payback
+
+### Consolidated Risk Register — Top 10
+The 10 highest-priority risks across all domains, deduplicated and ranked by combined severity × likelihood. Include which agents flagged each.
+
+### Quick Wins (Completable in < 1 Week, High Visible Impact)
+5 specific actions that can be done immediately with outsized impact on security, quality, or developer experience. Be exact — name the file, endpoint, or configuration.
+
+### Success Metrics — How to Measure This Programme
+Specific, measurable outcomes to track across: engineering velocity (DORA), security posture, reliability (SLO/error budget), cost reduction, and user experience improvement.
+
+### The Bottom Line
+If this organisation can only do THREE things this quarter, what are they and exactly why? Be direct. Commit to a recommendation. No hedging."""
+
+    try:
+        client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
+        message = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=8192,
+            temperature=0.2,
+            system="You are a Principal CTO and technical advisor synthesising expert panel findings into a unified master action plan. Be authoritative, specific, and decisive. Resolve contradictions explicitly. Name files, tools, and patterns by name.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        content = message.content[0].text
+        return {
+            "persona": "synthesis",
+            "name": SYNTHESIS_CONFIG["name"],
+            "emoji": SYNTHESIS_CONFIG["emoji"],
+            "status": "success",
+            "content": content
+        }
+    except Exception as e:
+        return {
+            "persona": "synthesis",
+            "name": SYNTHESIS_CONFIG["name"],
+            "emoji": SYNTHESIS_CONFIG["emoji"],
+            "status": "error",
+            "content": f"Synthesis error: {str(e)}"
+        }
+
+
 async def run_agent_fleet(
     gemini_api_key: str,
     anthropic_api_key: str,
@@ -952,9 +1076,11 @@ async def run_agent_fleet(
     db_persona_prompts: str = ""
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
-    Run all persona agents in parallel and yield results/updates as they happen.
+    Run all 15 persona agents in parallel, yield results as they arrive,
+    then run the synthesis agent sequentially and yield its result.
     """
     queue = asyncio.Queue()
+    collected_results: Dict[str, str] = {}
 
     async def status_callback(persona_key: str, status: str, sub_status: str):
         await queue.put({
@@ -966,23 +1092,22 @@ async def run_agent_fleet(
             }
         })
 
-    # Create tasks for all agents
+    # Launch all 15 persona agents in parallel
     tasks = []
     for persona_key in PERSONA_CONFIGS:
         task = asyncio.create_task(
             run_single_agent(
-                persona_key, 
-                gemini_api_key, 
-                anthropic_api_key, 
-                code_context, 
-                client_context, 
+                persona_key,
+                gemini_api_key,
+                anthropic_api_key,
+                code_context,
+                client_context,
                 db_persona_prompts,
                 status_callback
             )
         )
         tasks.append(task)
 
-    # Monitor tasks and put results into the queue
     async def monitor_tasks():
         for completed_task in asyncio.as_completed(tasks):
             result = await completed_task
@@ -993,15 +1118,30 @@ async def run_agent_fleet(
 
     monitor_job = asyncio.create_task(monitor_tasks())
 
-    # Yield items from the queue until all agents are done
+    # Stream results as each of the 15 agents completes
     done_count = 0
     while done_count < len(PERSONA_CONFIGS):
         update = await queue.get()
         if update["event"] == "agent_result":
             done_count += 1
+            result = update["data"]
+            if result["status"] == "success":
+                collected_results[result["persona"]] = result["content"]
         yield update
 
     await monitor_job
+
+    # ── Synthesis Pass (sequential, runs after all 15 complete) ──────────────
+    yield {
+        "event": "agent_update",
+        "data": {
+            "key": "synthesis",
+            "status": "thinking",
+            "sub_status": f"Reading all {len(collected_results)} reports..."
+        }
+    }
+    synthesis_result = await run_synthesis_agent(collected_results, anthropic_api_key)
+    yield {"event": "agent_result", "data": synthesis_result}
 
 
 async def run_agent_fleet_all(

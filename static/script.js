@@ -7,7 +7,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const state = {
         geminiKey: localStorage.getItem('gemini_api_key') || '',
         activeClient: null,
-        personaConfigs: {}
+        personaConfigs: {},
+        reportContents: {},      // Stores each agent's raw content for Q&A chat
+        currentChatPersona: null // Which agent the chat modal is open for
     };
 
     // ─────────────────────────────────────────
@@ -37,6 +39,16 @@ document.addEventListener('DOMContentLoaded', () => {
                     anthropicStatus.innerHTML = '<span class="status-badge env">ENV SET</span>';
                 } else {
                     anthropicStatus.innerHTML = '<span class="status-badge error">MISSING</span>';
+                }
+            }
+
+            // GitHub Status
+            const githubStatus = document.getElementById('github-status');
+            if (githubStatus) {
+                if (config.has_github_token) {
+                    githubStatus.innerHTML = '<span class="status-badge env">TOKEN SET</span>';
+                } else {
+                    githubStatus.innerHTML = '<span class="status-badge error">MISSING</span>';
                 }
             }
         } catch(e) { console.error("Could not load config", e); }
@@ -234,7 +246,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (eventType === 'agent_result') {
                 renderAgentResult(data);
-                const total = 15;
+                const total = 16; // 15 personas + 1 synthesis
                 const doneCount = document.querySelectorAll('.agent-status-card.done').length;
                 const progress = (doneCount / total) * 100;
                 const progressFill = document.getElementById('fleet-progress-fill');
@@ -327,6 +339,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 header.dataset.listener = "true";
                 
+                // "Ask" button — opens Q&A chat for this agent
+                const askBtn = document.createElement('button');
+                askBtn.className = 'ask-btn';
+                askBtn.innerText = '💬 Ask';
+                askBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    openChatModal(result.persona);
+                });
+                header.insertBefore(askBtn, icon);
+
                 // Secondary click for Profile Modal
                 const profileHint = document.createElement('span');
                 profileHint.className = 'profile-link';
@@ -338,8 +360,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     e.stopPropagation();
                     openPersonaModal(result.persona);
                 });
-                header.insertBefore(profileHint, icon);
+                header.insertBefore(profileHint, askBtn);
             }
+
+            // Store content for Q&A chat context
+            state.reportContents[result.persona] = result.content || '';
 
             const contentEl = document.getElementById(`${result.persona}-content`);
             if (contentEl) {
@@ -354,6 +379,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (result.persona === 'architect' && result.status === 'success') {
                 extractAndRenderMermaid(result.content);
+            }
+
+            // GitHub Issues export button — only on BA card
+            if (result.persona === 'ba' && result.status === 'success') {
+                const header = reportCard.querySelector('.report-card-header');
+                if (header && !header.querySelector('.gh-export-btn')) {
+                    const exportBtn = document.createElement('button');
+                    exportBtn.className = 'gh-export-btn secondary-btn btn-sm';
+                    exportBtn.innerText = '🐙 Export to GitHub Issues';
+                    exportBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        exportToGitHubIssues(result.content);
+                    });
+                    header.appendChild(exportBtn);
+                }
             }
         }
     }
@@ -529,6 +569,199 @@ document.addEventListener('DOMContentLoaded', () => {
         const mermaidWrapper = document.getElementById('mermaid-wrapper');
         if (mermaidWrapper) mermaidWrapper.style.display = 'none';
     }
+
+    // ─────────────────────────────────────────
+    // Q&A Chat Modal
+    // ─────────────────────────────────────────
+    const chatModal = document.getElementById('chat-modal');
+    const closeChatBtn = document.getElementById('close-chat-btn');
+    const chatSendBtn = document.getElementById('chat-send-btn');
+    const chatInput = document.getElementById('chat-input');
+    const chatMessages = document.getElementById('chat-messages');
+
+    function openChatModal(personaKey) {
+        const allConfigs = { ...state.personaConfigs, synthesis: { name: 'The Verdict', emoji: '🎯' } };
+        const config = allConfigs[personaKey] || { name: personaKey, emoji: '🤖' };
+        state.currentChatPersona = personaKey;
+        document.getElementById('chat-modal-emoji').innerText = config.emoji || '🤖';
+        document.getElementById('chat-modal-name').innerText = config.name || personaKey;
+        chatMessages.innerHTML = '<div class="chat-placeholder muted-text text-sm">Ask anything about this agent\'s findings...</div>';
+        if (chatInput) chatInput.value = '';
+        chatModal.style.display = 'flex';
+        chatInput?.focus();
+    }
+
+    closeChatBtn?.addEventListener('click', () => { chatModal.style.display = 'none'; });
+    window.addEventListener('click', (e) => { if (e.target === chatModal) chatModal.style.display = 'none'; });
+
+    async function sendChatMessage() {
+        const question = chatInput?.value.trim();
+        if (!question || !state.currentChatPersona) return;
+
+        chatInput.value = '';
+        chatInput.disabled = true;
+        chatSendBtn.disabled = true;
+
+        // Remove placeholder
+        chatMessages.querySelector('.chat-placeholder')?.remove();
+
+        // User bubble
+        const userBubble = document.createElement('div');
+        userBubble.className = 'chat-bubble user-bubble';
+        userBubble.innerText = question;
+        chatMessages.appendChild(userBubble);
+
+        // Agent typing indicator
+        const typingEl = document.createElement('div');
+        typingEl.className = 'chat-bubble agent-bubble typing';
+        typingEl.innerText = '...';
+        chatMessages.appendChild(typingEl);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+
+        try {
+            const res = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    persona_key: state.currentChatPersona,
+                    question,
+                    agent_report: state.reportContents[state.currentChatPersona] || ''
+                })
+            });
+            const data = await res.json();
+            typingEl.className = 'chat-bubble agent-bubble';
+            typingEl.innerHTML = simpleMarkdown(data.response || data.detail || 'No response.');
+        } catch (e) {
+            typingEl.className = 'chat-bubble agent-bubble error';
+            typingEl.innerText = 'Network error — could not reach the agent.';
+        } finally {
+            chatInput.disabled = false;
+            chatSendBtn.disabled = false;
+            chatInput.focus();
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+    }
+
+    chatSendBtn?.addEventListener('click', sendChatMessage);
+    chatInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChatMessage(); });
+
+    // ─────────────────────────────────────────
+    // GitHub Issues Export
+    // ─────────────────────────────────────────
+    async function exportToGitHubIssues(baContent) {
+        const githubUrl = document.getElementById('github-url')?.value.trim();
+        if (!githubUrl) {
+            alert('GitHub URL not found. Please re-run the analysis first.');
+            return;
+        }
+
+        // Parse stories using the same regex as renderJiraBacklog
+        const storyRegex = /\*\*Title\*\*:\s*(.*?)\n\*\*Story Points\*\*:\s*(\d+)\n\*\*User Story\*\*:\s*(.*?)\n\*\*Acceptance Criteria\*\*:\s*([\s\S]*?)(?=\n\*\*Title\*\*|\n---|$)/g;
+        const stories = [];
+        let match;
+        while ((match = storyRegex.exec(baContent)) !== null) {
+            const pts = parseInt(match[2].trim());
+            const acRaw = match[4].trim();
+            const acLines = acRaw.split('\n').map(l => l.replace(/^[-*]\s*/, '').trim()).filter(Boolean);
+            stories.push({
+                title: match[1].trim(),
+                story: match[3].trim(),
+                ac: acLines,
+                points: pts,
+                priority: pts > 8 ? 'high' : pts > 3 ? 'med' : 'low'
+            });
+        }
+
+        if (stories.length === 0) {
+            alert('No structured stories found in the BA report to export.');
+            return;
+        }
+
+        if (!confirm(`Export ${stories.length} user stories as GitHub Issues to ${githubUrl}?\n\nThis requires GITHUB_TOKEN to be set in your .env file.`)) return;
+
+        try {
+            const res = await fetch('/api/create-github-issues', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ github_url: githubUrl, stories })
+            });
+            const result = await res.json();
+            if (!res.ok) {
+                alert(`Error: ${result.detail}`);
+                return;
+            }
+            const msg = `✅ Created ${result.created.length} issues.\n${result.failed.length > 0 ? `⚠️ ${result.failed.length} failed.` : ''}\n\nFirst issue: ${result.created[0]?.url || ''}`;
+            alert(msg);
+        } catch (e) {
+            alert('Network error during GitHub Issues export.');
+        }
+    }
+
+    // ─────────────────────────────────────────
+    // History View
+    // ─────────────────────────────────────────
+    async function loadHistory() {
+        const historyList = document.getElementById('history-list');
+        if (!historyList) return;
+        try {
+            const res = await fetch('/api/reports');
+            const reports = await res.json();
+
+            if (!reports || reports.length === 0) {
+                historyList.innerHTML = '<p class="muted-text">No past analyses yet. Run an analysis to see history here.</p>';
+                return;
+            }
+
+            historyList.innerHTML = reports.map(r => `
+                <div class="history-item" data-id="${r.id}">
+                    <div class="history-item-main">
+                        <span class="history-repo">${r.github_url}</span>
+                        <span class="history-date muted-text text-sm">${new Date(r.analyzed_at).toLocaleString()}</span>
+                    </div>
+                    <button class="secondary-btn btn-sm history-load-btn" data-id="${r.id}">Load Report →</button>
+                </div>
+            `).join('');
+
+            historyList.querySelectorAll('.history-load-btn').forEach(btn => {
+                btn.addEventListener('click', () => loadHistoryReport(parseInt(btn.dataset.id)));
+            });
+        } catch (e) {
+            historyList.innerHTML = '<p class="muted-text">Could not load history (Supabase reports table may not exist yet — see CLAUDE.md for setup SQL).</p>';
+        }
+    }
+
+    async function loadHistoryReport(reportId) {
+        try {
+            const res = await fetch(`/api/reports/${reportId}`);
+            const report = await res.json();
+            if (!report || !report.results) { alert('Report data not found.'); return; }
+
+            resetReport();
+            document.querySelector('[data-target="report"]').click();
+
+            // Re-render each agent result from saved data
+            for (const [persona, content] of Object.entries(report.results)) {
+                renderAgentResult({ persona, name: persona, emoji: '📋', status: 'success', content });
+            }
+
+            // Re-render synthesis if saved
+            if (report.synthesis_content) {
+                renderAgentResult({ persona: 'synthesis', name: 'The Verdict', emoji: '🎯', status: 'success', content: report.synthesis_content });
+            }
+
+            const statusText = document.getElementById('discovery-status-text');
+            if (statusText) statusText.innerText = `Loaded from history · ${report.github_url}`;
+        } catch (e) {
+            alert('Could not load this report.');
+        }
+    }
+
+    // Load history when the history view is first activated
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+        if (btn.dataset.target === 'history') {
+            btn.addEventListener('click', loadHistory, { once: true });
+        }
+    });
 
     // ─────────────────────────────────────────
     // Collapse / Expand All

@@ -32,6 +32,9 @@
                 <button class="nav-btn" data-target="how-it-works">
                     <span class="icon">💡</span> How it Works
                 </button>
+                <button class="nav-btn" data-target="history">
+                    <span class="icon">📚</span> History
+                </button>
                 <button class="nav-btn" data-target="admin" style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
                     <span class="icon">⚙️</span> Settings / Admin
                 </button>
@@ -53,6 +56,10 @@
                 <div class="status-item">
                     <span class="status-label">Anthropic API:</span>
                     <span id="anthropic-status" class="status-value">Checking...</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">GitHub:</span>
+                    <span id="github-status" class="status-value">Checking...</span>
                 </div>
             </header>
 
@@ -253,6 +260,26 @@
                             </div>
                             <div id="tech_lead-content" class="report-content"></div>
                         </div>
+
+                        <!-- The Verdict — Synthesis Agent (appears last, styled distinctly) -->
+                        <div class="glass-card full-width report-card verdict-card" id="report-synthesis" style="display: none;">
+                            <div class="report-card-header verdict-header">
+                                <span class="persona-badge verdict-badge">🎯 The Verdict — CTO Master Report</span>
+                                <span class="verdict-subtitle">Synthesised from all 15 specialist agents · Contradictions resolved · Unified action plan</span>
+                            </div>
+                            <div id="synthesis-content" class="report-content"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- History View -->
+                <section id="view-history" class="view hidden fade-in">
+                    <div class="glass-card full-width">
+                        <h3>Analysis History</h3>
+                        <p class="muted-text" style="margin-bottom: 20px;">Past repository analyses saved automatically after each run.</p>
+                        <div id="history-list">
+                            <p class="muted-text">Loading history...</p>
+                        </div>
                     </div>
                 </section>
 
@@ -324,6 +351,31 @@
 
             </div>
         </main>
+    </div>
+
+    <!-- Q&A Chat Modal -->
+    <div id="chat-modal" class="modal-overlay" style="display:none;">
+        <div class="chat-modal-content glass-card">
+            <div class="modal-header">
+                <div class="modal-title-box">
+                    <span id="chat-modal-emoji" class="modal-emoji"></span>
+                    <div>
+                        <h3>Ask <span id="chat-modal-name">Agent</span></h3>
+                        <p class="muted-text text-sm" style="margin:0;">Follow-up questions based on this agent's analysis</p>
+                    </div>
+                </div>
+                <button class="close-modal" id="close-chat-btn">&times;</button>
+            </div>
+            <div id="chat-messages" class="chat-messages">
+                <div class="chat-placeholder muted-text text-sm">
+                    Ask anything about this agent's findings — "Why did you flag X?", "How do I fix finding #3?", "Give me more detail on the migration plan."
+                </div>
+            </div>
+            <div class="chat-input-area">
+                <input type="text" id="chat-input" placeholder="Ask a follow-up question..." autocomplete="off">
+                <button id="chat-send-btn" class="primary-btn">→</button>
+            </div>
+        </div>
     </div>
 
     <!-- Add Mermaid.js -->
