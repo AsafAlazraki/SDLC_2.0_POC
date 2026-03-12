@@ -358,44 +358,331 @@
 
                 <!-- How it Works View -->
                 <section id="view-how-it-works" class="view hidden fade-in">
-                    <div class="glass-card full-width">
-                        <h3 class="modern-heading">💡 HOW THE DISCOVERY ENGINE WORKS</h3>
-                        <p class="muted-text mb-4">A peak under the hood of our Multi-Agent Hybrid Intelligence platform.</p>
-                        
-                        <div class="explainer-grid">
-                            <div class="explainer-step">
-                                <div class="step-icon">📡</div>
-                                <h5>1. Repository Ingestion</h5>
-                                <p>Our engine clones the repository and performs a deep recursive scan, filtering for source code while skipping binary artifacts and dependencies. Content is aggregated into a high-density intelligence context.</p>
-                            </div>
-                            <div class="explainer-step">
-                                <div class="step-icon">🤖</div>
-                                <h5>2. Fleet Dispatch</h5>
-                                <p>We launch a fleet of 15 specialized AI personas. Each agent is a distinct instance of either **Claude Sonnet 4.6** (for complex logic/strategy) or **Gemini 2.0 Flash** (for deep research and grounding).</p>
-                            </div>
-                            <div class="explainer-step">
-                                <div class="step-icon">🔍</div>
-                                <h5>3. Grounded Research</h5>
-                                <p>Gemini agents use Google Search grounding to research the tech stack, library vulnerabilities, and industry standards, ensuring the analysis isn't just a hallucination but a verified audit.</p>
-                            </div>
-                            <div class="explainer-step">
-                                <div class="step-icon">🏗️</div>
-                                <h5>4. Synthesis & Visualization</h5>
-                                <p>The Architect agent synthesizes the findings into a phased roadmap, while the BA generates a structured Jira backlog. Mermaid.js is utilized to render real-time architectural diagrams.</p>
-                            </div>
-                        </div>
 
-                        <div class="tech-stack-showcase mt-5">
-                            <h4>Hybrid Intelligence Model</h4>
-                            <div class="stack-badges" style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 15px;">
-                                <span class="status-pill env">Claude Sonnet 4.6</span>
-                                <span class="status-pill env">Gemini 2.0 Flash</span>
-                                <span class="status-pill success">Google Search Grounding</span>
-                                <span class="status-pill success">Mermaid Diagrams</span>
-                                <span class="status-pill success">FastAPI & SSE</span>
+                    <!-- Hero -->
+                    <div class="glass-card full-width hiw-hero">
+                        <div class="hiw-hero-inner">
+                            <div class="hiw-hero-badge">UNDER THE HOOD</div>
+                            <h2 class="hiw-hero-title">Multi-Agent Hybrid Intelligence</h2>
+                            <p class="hiw-hero-sub">Drop in a GitHub URL. In minutes, 16 world-class AI specialists — split across two frontier models — independently analyse your codebase from every professional angle simultaneously, then a 17th reasoning pass synthesises everything into a single, contradiction-free CTO-level action plan.</p>
+                            <div class="hiw-stat-row">
+                                <div class="hiw-stat"><span class="hiw-stat-num">16</span><span class="hiw-stat-label">AI Agents</span></div>
+                                <div class="hiw-stat"><span class="hiw-stat-num">2</span><span class="hiw-stat-label">Frontier Models</span></div>
+                                <div class="hiw-stat"><span class="hiw-stat-num">15</span><span class="hiw-stat-label">Expert Domains</span></div>
+                                <div class="hiw-stat"><span class="hiw-stat-num">∞</span><span class="hiw-stat-label">Repos Analysable</span></div>
                             </div>
                         </div>
                     </div>
+
+                    <!-- Pipeline Phases -->
+                    <div class="glass-card full-width">
+                        <h3 class="modern-heading">⚡ THE PIPELINE — 5 PHASES FROM URL TO VERDICT</h3>
+                        <p class="muted-text mb-4">Every analysis runs the same deterministic pipeline. Here's exactly what happens, in order.</p>
+
+                        <div class="hiw-pipeline">
+
+                            <div class="hiw-phase">
+                                <div class="hiw-phase-num">0</div>
+                                <div class="hiw-phase-content">
+                                    <div class="hiw-phase-header">
+                                        <span class="hiw-phase-icon">🔍</span>
+                                        <h4>Reconnaissance Pre-Pass</h4>
+                                        <span class="hiw-phase-model gemini-badge">Gemini 2.0 Flash</span>
+                                    </div>
+                                    <p>Before the main fleet launches, a fast, cheap Gemini call scans the first 80,000 characters of the codebase and returns structured JSON: primary language, frameworks, databases, auth mechanism, CI/CD setup, complexity rating, entry points, and any immediately visible red flags.</p>
+                                    <p class="hiw-phase-detail">This reconnaissance context is injected into <em>every one of the 15 agents' prompts</em>, so no agent wastes capacity rediscovering the tech stack. They all start with verified baseline facts and go straight to deep domain analysis. If recon fails, it degrades gracefully — the fleet launches anyway without it.</p>
+                                    <div class="hiw-code-block">{"primary_language":"Python 3.11","frameworks":["FastAPI","Supabase"],"auth_mechanism":"API key (env-only)","red_flags":["No rate limiting on public endpoints"],"estimated_complexity":"Medium"}</div>
+                                </div>
+                            </div>
+
+                            <div class="hiw-phase">
+                                <div class="hiw-phase-num">1</div>
+                                <div class="hiw-phase-content">
+                                    <div class="hiw-phase-header">
+                                        <span class="hiw-phase-icon">📡</span>
+                                        <h4>Repository Ingestion</h4>
+                                        <span class="hiw-phase-model neutral-badge">GitHub REST API</span>
+                                    </div>
+                                    <p>The engine fetches the full recursive file tree via the GitHub API, then downloads each file's raw content in parallel. No cloning, no git — pure API, works on any public repository.</p>
+                                    <div class="hiw-detail-grid">
+                                        <div class="hiw-detail-item">
+                                            <strong>Binary skip list</strong>
+                                            <span>PNG, JPG, SVG, PDF, WOFF, ZIP, EXE, DLL, SO and 20+ more extensions are skipped automatically</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>Directory skip list</strong>
+                                            <span>node_modules, .git, __pycache__, dist, build, venv, vendor — dependency noise removed before any agent sees it</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>Per-file size cap</strong>
+                                            <span>200KB per file — prevents a single minified bundle from consuming the entire context budget</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>Total corpus cap</strong>
+                                            <span>1,000,000 characters total — enough for very large repos while keeping costs predictable</span>
+                                        </div>
+                                    </div>
+                                    <p class="hiw-phase-detail">Each file is emitted as a structured block: <code>====FILE: path/to/file.ext====</code> followed by raw content. This separator is what the next phase uses to slice and score files per persona.</p>
+                                </div>
+                            </div>
+
+                            <div class="hiw-phase">
+                                <div class="hiw-phase-num">2</div>
+                                <div class="hiw-phase-content">
+                                    <div class="hiw-phase-header">
+                                        <span class="hiw-phase-icon">🎯</span>
+                                        <h4>Persona-Aware Context Filtering</h4>
+                                        <span class="hiw-phase-model neutral-badge">Python — Zero API cost</span>
+                                    </div>
+                                    <p>Before any agent sees the codebase, <code>filter_context_for_persona()</code> re-parses the file blocks, scores each file's relevance to that specific agent's domain, sorts by score descending, and fills up to that agent's token budget with the highest-signal files.</p>
+                                    <p class="hiw-phase-detail">This is the biggest quality improvement in the engine. Previously every agent received the same 60K-char head-truncation — the Security Engineer was wading through CSS variables, the UX Designer was reading database migrations. Now each agent receives a deep, targeted slice.</p>
+
+                                    <div class="hiw-filter-table">
+                                        <div class="hiw-filter-header">
+                                            <span>Agent</span><span>Prioritises</span><span>Skips</span><span>Budget</span>
+                                        </div>
+                                        <div class="hiw-filter-row"><span>🔒 Security</span><span>auth, token, middleware, config, .env, requirements</span><span>.css, .html, migrations</span><span>100K chars</span></div>
+                                        <div class="hiw-filter-row"><span>⚙️ DevOps</span><span>Dockerfile, .yml, CI, deploy, terraform, Makefile</span><span>.css, migrations, tests</span><span>80K chars</span></div>
+                                        <div class="hiw-filter-row"><span>🎨 UI/UX</span><span>.html, .css, component, template, modal, widget</span><span>migrations, docker, tests</span><span>70K chars</span></div>
+                                        <div class="hiw-filter-row"><span>🗄️ Data Eng</span><span>model, migration, schema, db, query, ORM</span><span>.css, .html, docker</span><span>80K chars</span></div>
+                                        <div class="hiw-filter-row"><span>🛡️ DevSecOps</span><span>Dockerfile, requirements, .github, CI, credential</span><span>.css, migrations</span><span>100K chars</span></div>
+                                        <div class="hiw-filter-row"><span>🏆 Tech Lead</span><span><em>Everything — no filtering applied</em></span><span>Nothing</span><span>60K chars</span></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="hiw-phase">
+                                <div class="hiw-phase-num">3</div>
+                                <div class="hiw-phase-content">
+                                    <div class="hiw-phase-header">
+                                        <span class="hiw-phase-icon">🚀</span>
+                                        <h4>Parallel Fleet Execution</h4>
+                                        <span class="hiw-phase-model neutral-badge">asyncio — Python</span>
+                                    </div>
+                                    <p>All 15 agents are created as async tasks and run concurrently. Results are yielded as they arrive via <code>asyncio.as_completed()</code> — the fastest agent's report appears in the UI first, regardless of launch order. Results stream to the browser over <strong>Server-Sent Events (SSE)</strong> in real time.</p>
+
+                                    <div class="hiw-safeguards">
+                                        <h5>Rate Limit Safeguards (5-Layer Defence)</h5>
+                                        <div class="hiw-safeguard-item">
+                                            <span class="hiw-sg-icon">🔒</span>
+                                            <div><strong>Semaphore (max 2 concurrent Claude calls)</strong> — Anthropic Tier 1 allows 30K input tokens/min. The semaphore ensures no more than 2 Claude agents are making API calls simultaneously, preventing burst overload.</div>
+                                        </div>
+                                        <div class="hiw-safeguard-item">
+                                            <span class="hiw-sg-icon">⏱️</span>
+                                            <div><strong>Staggered launch (4s between Claude agents)</strong> — Claude agents don't all fire at t=0. They launch one every 4 seconds, spreading the token burst across ~28 seconds rather than spiking it all at once.</div>
+                                        </div>
+                                        <div class="hiw-safeguard-item">
+                                            <span class="hiw-sg-icon">🔄</span>
+                                            <div><strong>Retry with exponential backoff</strong> — On 429 (rate limit) or 529 (overload), the agent waits 15s → 30s → 60s between up to 3 retry attempts before giving up.</div>
+                                        </div>
+                                        <div class="hiw-safeguard-item">
+                                            <span class="hiw-sg-icon">✂️</span>
+                                            <div><strong>Context truncation per persona</strong> — After relevance filtering, each Claude agent's context is capped at its persona-specific limit (50K–100K chars ≈ 12K–25K tokens), keeping individual prompt sizes within the rate limit window.</div>
+                                        </div>
+                                        <div class="hiw-safeguard-item">
+                                            <span class="hiw-sg-icon">🔀</span>
+                                            <div><strong>Graceful Gemini fallback</strong> — If a Claude agent exhausts all retries, it silently switches to Gemini with live Google Search grounding rather than returning an error. The user sees a completed report regardless.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="hiw-phase">
+                                <div class="hiw-phase-num">4</div>
+                                <div class="hiw-phase-content">
+                                    <div class="hiw-phase-header">
+                                        <span class="hiw-phase-icon">🎯</span>
+                                        <h4>Synthesis — "The Verdict"</h4>
+                                        <span class="hiw-phase-model claude-badge">Claude Sonnet 4.6 + Extended Thinking</span>
+                                    </div>
+                                    <p>After all 15 agents complete, a 16th sequential call reads every report concatenated and produces the master action plan. This is the only step that <em>knows about all other agents</em> — it is specifically tasked with resolving contradictions, identifying consensus (findings validated by 3+ independent agents), and filling blind spots the panel collectively missed.</p>
+                                    <p class="hiw-phase-detail"><strong>Extended Thinking is enabled</strong> with an 8,000-token private reasoning budget. Before writing a single word of the final report, Claude reasons through the contradictions in a private scratchpad — e.g., "Performance says cache aggressively; Security flags caching as a risk vector — which wins and why?" The thinking blocks are discarded before storing the output. Only the authoritative final answer is shown. Output budget is 10,000 tokens.</p>
+                                    <div class="hiw-verdict-sections">
+                                        <span>Executive Summary</span>
+                                        <span>Consensus Findings (3+ agents)</span>
+                                        <span>Contradictions Resolved</span>
+                                        <span>Blind Spots</span>
+                                        <span>Critical Path</span>
+                                        <span>Risk Register (Top 10)</span>
+                                        <span>Quick Wins</span>
+                                        <span>Success Metrics</span>
+                                        <span>The Bottom Line</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+                    </div>
+
+                    <!-- The Fleet -->
+                    <div class="glass-card full-width">
+                        <h3 class="modern-heading">🤖 THE 15-AGENT FLEET — EVERY PROFESSIONAL DOMAIN</h3>
+                        <p class="muted-text mb-4">Each agent has a distinct identity, deep investigation checklist, strict deliverable format, and a model assignment tuned to its domain's needs.</p>
+
+                        <div class="hiw-model-split">
+                            <div class="hiw-model-col claude-col">
+                                <div class="hiw-model-header">
+                                    <span class="hiw-phase-model claude-badge" style="font-size:0.9rem;">Claude Sonnet 4.6</span>
+                                    <p class="muted-text" style="font-size:0.8rem;margin-top:8px;">Deep expertise mandate. Cites named patterns (Strangler Fig, CQRS, SOLID, DDD), standards bodies (NIST, OWASP, ISO 27001, WCAG 2.2), and real-world postmortems from Netflix, Stripe, Airbnb.</p>
+                                </div>
+                                <div class="hiw-agent-list">
+                                    <div class="hiw-agent-item"><span class="agent-emoji">🏗️</span><div><strong>Solutions Architect</strong><span>As-is assessment, 3-phase modernisation roadmap, Mermaid architecture diagram, migration patterns (Strangler Fig, Branch by Abstraction)</span></div></div>
+                                    <div class="hiw-agent-item"><span class="agent-emoji">📋</span><div><strong>Business Analyst</strong><span>Structured Jira-format backlog (8+ stories with Given/When/Then ACs), business process map, stakeholder questions, GitHub Issues export</span></div></div>
+                                    <div class="hiw-agent-item"><span class="agent-emoji">📄</span><div><strong>Technical Writer</strong><span>Docs audit, ADRs, runbook templates, API reference, component reference, onboarding gap analysis</span></div></div>
+                                    <div class="hiw-agent-item"><span class="agent-emoji">🎯</span><div><strong>Product Manager</strong><span>Value map, KPI dashboard, Now/Next/Later roadmap, ROI &amp; business case, stakeholder communication plan</span></div></div>
+                                    <div class="hiw-agent-item"><span class="agent-emoji">🎨</span><div><strong>UI/UX Designer</strong><span>UX audit (8+ findings), user journey maps, IA proposal, WCAG 2.2 gap analysis, design system recommendations, micro-interaction specs</span></div></div>
+                                    <div class="hiw-agent-item"><span class="agent-emoji">🔌</span><div><strong>API Designer</strong><span>REST maturity audit, API violations register, OpenAPI 3.1 specification outline, versioning strategy, error handling standard, DX improvements</span></div></div>
+                                    <div class="hiw-agent-item"><span class="agent-emoji">🏆</span><div><strong>Tech Lead</strong><span>Codebase health rating (A–F), complexity &amp; coupling analysis, tech debt inventory (4 quadrants), bus factor analysis, 90-day leadership plan</span></div></div>
+                                </div>
+                            </div>
+                            <div class="hiw-model-col gemini-col">
+                                <div class="hiw-model-header">
+                                    <span class="hiw-phase-model gemini-badge" style="font-size:0.9rem;">Gemini 2.0 Flash</span>
+                                    <p class="muted-text" style="font-size:0.8rem;margin-top:8px;">Live Google Search grounding active. Searches LinkedIn job postings, GitHub starred repos, CVE databases, ThoughtWorks Radar, Stack Overflow, and engineering blogs for the exact tech stack found.</p>
+                                </div>
+                                <div class="hiw-agent-list">
+                                    <div class="hiw-agent-item"><span class="agent-emoji">✅</span><div><strong>QA Lead</strong><span>Test coverage audit, 8-row risk register, regression map, test strategy (unit/integration/E2E/performance), automation tooling for this stack, quality gates</span></div></div>
+                                    <div class="hiw-agent-item"><span class="agent-emoji">🔒</span><div><strong>Security Engineer</strong><span>OWASP Top 10 audit, vulnerability register with CVSS scores &amp; exploit scenarios, CVE dependency report, secure architecture recommendations</span></div></div>
+                                    <div class="hiw-agent-item"><span class="agent-emoji">🗄️</span><div><strong>Data Engineer</strong><span>Full data model mapping, data quality profile, migration strategy (zero-downtime), Modern Data Stack recommendations, performance optimisation plan</span></div></div>
+                                    <div class="hiw-agent-item"><span class="agent-emoji">⚙️</span><div><strong>DevOps/SRE</strong><span>Production readiness score (0–100), CI/CD pipeline design (DORA-focused), IaC strategy, container &amp; K8s plan, observability blueprint, DR runbook</span></div></div>
+                                    <div class="hiw-agent-item"><span class="agent-emoji">⚖️</span><div><strong>Compliance &amp; Privacy</strong><span>Regulatory applicability (GDPR/HIPAA/SOC 2/PCI-DSS), Privacy Impact Assessment, compliance gap table, data flow map, audit trail requirements</span></div></div>
+                                    <div class="hiw-agent-item"><span class="agent-emoji">🛡️</span><div><strong>DevSecOps</strong><span>Security automation maturity (1–5), secrets audit, shift-left pipeline (pre-commit → runtime), supply chain security, Zero Trust roadmap, security champions programme</span></div></div>
+                                    <div class="hiw-agent-item"><span class="agent-emoji">🚀</span><div><strong>Performance Engineer</strong><span>8+ bottleneck findings, scalability cliff analysis (2x/10x/100x), caching strategy, database performance plan, load testing design, monitoring blueprint</span></div></div>
+                                    <div class="hiw-agent-item"><span class="agent-emoji">💰</span><div><strong>Cost Optimisation Analyst</strong><span>8+ FinOps findings, cloud cost model, architecture cost analysis, 3-phase FinOps roadmap, engineering efficiency analysis, cost governance plan</span></div></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Features -->
+                    <div class="glass-card full-width">
+                        <h3 class="modern-heading">✨ BUILT-IN FEATURES</h3>
+                        <p class="muted-text mb-4">Everything is integrated — no manual export steps, no copy-pasting between tools.</p>
+                        <div class="hiw-features-grid">
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">💬</div>
+                                <h5>Agent Q&amp;A Chat</h5>
+                                <p>Every report card has an "Ask" button. Opens a chat modal pre-seeded with that agent's full report as context. Ask follow-ups: "Why did you flag X?", "Give me the code for fix #3", "What's the priority order?" Each agent responds in character with its own domain expertise.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">📤</div>
+                                <h5>GitHub Issues Export</h5>
+                                <p>The BA report's structured stories are parsed and exported directly to GitHub Issues in the analysed repository via the GitHub API. Each issue includes the user story, all acceptance criteria, story points, priority label, and technical notes — ready for sprint planning.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">📊</div>
+                                <h5>Live Architecture Diagrams</h5>
+                                <p>The Architect agent produces a Mermaid.js diagram in its report. The frontend automatically detects, extracts, and renders it as an interactive SVG — no copy-pasting to Mermaid Live. The modernisation roadmap is also parsed into a visual 3-phase grid.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">🗃️</div>
+                                <h5>Jira-Style Backlog</h5>
+                                <p>The BA report's user stories are parsed by regex and rendered as a kanban-style board grouped by priority (Must Have / Should Have / Could Have) with story points, acceptance criteria, and technical notes displayed inline — no external tool needed.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">🕰️</div>
+                                <h5>Report Persistence &amp; History</h5>
+                                <p>Every completed analysis is automatically saved to Supabase (PostgreSQL). The History view shows all past runs with repo URL, date, and client context. Clicking any history entry re-renders the full 16-card report from saved JSON — no re-analysis needed.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">🏢</div>
+                                <h5>Client Context Injection</h5>
+                                <p>Create a client profile in the Admin panel (name, description, constraints). When selected, this context is injected into every agent's prompt — agents tailor recommendations to your client's industry, scale, risk profile, and regulatory environment.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- SSE Streaming Architecture -->
+                    <div class="glass-card full-width">
+                        <h3 class="modern-heading">📡 REAL-TIME STREAMING ARCHITECTURE</h3>
+                        <p class="muted-text mb-4">Results stream to your browser the moment each agent completes — you don't wait for all 15 to finish before seeing anything.</p>
+                        <div class="hiw-sse-diagram">
+                            <div class="hiw-sse-col">
+                                <h5>Backend (FastAPI)</h5>
+                                <div class="hiw-sse-events">
+                                    <div class="hiw-sse-event status-event"><code>status</code> — Fleet lifecycle messages (cloning, launching, complete)</div>
+                                    <div class="hiw-sse-event update-event"><code>agent_update</code> — Per-agent status (Analyzing Source Code... / Rate limited — waiting 15s...)</div>
+                                    <div class="hiw-sse-event result-event"><code>agent_result</code> — Full report payload <code>{persona, name, emoji, status, content}</code></div>
+                                    <div class="hiw-sse-event error-event"><code>error</code> — Structured error with message</div>
+                                </div>
+                            </div>
+                            <div class="hiw-sse-arrow">→</div>
+                            <div class="hiw-sse-col">
+                                <h5>Frontend (Vanilla JS)</h5>
+                                <div class="hiw-sse-events">
+                                    <div class="hiw-sse-event status-event">Progress bar + fleet status message updated</div>
+                                    <div class="hiw-sse-event update-event">Per-agent card spinner and sub-status text updated live</div>
+                                    <div class="hiw-sse-event result-event">Report card rendered with persona-specific renderer (Jira board, Mermaid diagram, or markdown)</div>
+                                    <div class="hiw-sse-event error-event">Error displayed inline, fleet continues for other agents</div>
+                                </div>
+                            </div>
+                        </div>
+                        <p class="muted-text" style="margin-top:20px;font-size:0.85rem;">The SSE connection uses <code>sse-starlette</code> on the backend and the browser's native <code>EventSource</code> API on the frontend. No WebSocket handshake overhead, no polling. The connection closes automatically when the synthesis result is yielded.</p>
+                    </div>
+
+                    <!-- Tech Stack -->
+                    <div class="glass-card full-width">
+                        <h3 class="modern-heading">🔧 FULL TECHNOLOGY STACK</h3>
+                        <div class="hiw-tech-grid">
+                            <div class="hiw-tech-section">
+                                <h5>Backend</h5>
+                                <div class="hiw-tech-items">
+                                    <span class="hiw-tech-tag">Python 3.11+</span>
+                                    <span class="hiw-tech-tag">FastAPI</span>
+                                    <span class="hiw-tech-tag">Uvicorn</span>
+                                    <span class="hiw-tech-tag">sse-starlette</span>
+                                    <span class="hiw-tech-tag">httpx (async)</span>
+                                    <span class="hiw-tech-tag">asyncio</span>
+                                </div>
+                            </div>
+                            <div class="hiw-tech-section">
+                                <h5>AI — Strategy Layer</h5>
+                                <div class="hiw-tech-items">
+                                    <span class="hiw-tech-tag claude-tag">Claude Sonnet 4.6</span>
+                                    <span class="hiw-tech-tag claude-tag">Extended Thinking (8K budget)</span>
+                                    <span class="hiw-tech-tag claude-tag">Anthropic Python SDK</span>
+                                    <span class="hiw-tech-tag claude-tag">AsyncAnthropic</span>
+                                </div>
+                            </div>
+                            <div class="hiw-tech-section">
+                                <h5>AI — Research Layer</h5>
+                                <div class="hiw-tech-items">
+                                    <span class="hiw-tech-tag gemini-tag">Gemini 2.0 Flash</span>
+                                    <span class="hiw-tech-tag gemini-tag">Google Search Grounding</span>
+                                    <span class="hiw-tech-tag gemini-tag">google-genai SDK</span>
+                                    <span class="hiw-tech-tag gemini-tag">GenerateContentConfig</span>
+                                </div>
+                            </div>
+                            <div class="hiw-tech-section">
+                                <h5>Database &amp; Persistence</h5>
+                                <div class="hiw-tech-items">
+                                    <span class="hiw-tech-tag">Supabase</span>
+                                    <span class="hiw-tech-tag">PostgreSQL</span>
+                                    <span class="hiw-tech-tag">JSONB (report storage)</span>
+                                    <span class="hiw-tech-tag">supabase-py</span>
+                                </div>
+                            </div>
+                            <div class="hiw-tech-section">
+                                <h5>Frontend</h5>
+                                <div class="hiw-tech-items">
+                                    <span class="hiw-tech-tag">Vanilla JS (ES Modules)</span>
+                                    <span class="hiw-tech-tag">Mermaid.js v10</span>
+                                    <span class="hiw-tech-tag">EventSource API</span>
+                                    <span class="hiw-tech-tag">Glassmorphism CSS</span>
+                                    <span class="hiw-tech-tag">Space Grotesk font</span>
+                                </div>
+                            </div>
+                            <div class="hiw-tech-section">
+                                <h5>Integrations</h5>
+                                <div class="hiw-tech-items">
+                                    <span class="hiw-tech-tag">GitHub REST API (ingestion)</span>
+                                    <span class="hiw-tech-tag">GitHub Issues API (export)</span>
+                                    <span class="hiw-tech-tag">No-auth public repo access</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                 </section>
 
             </div>
