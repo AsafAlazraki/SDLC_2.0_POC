@@ -36,6 +36,7 @@ class RepoAnalysisRequest(BaseModel):
     gemini_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     client_id: Optional[int] = None
+    additional_context: Optional[str] = None
 
 class ChatRequest(BaseModel):
     persona_key: str
@@ -182,6 +183,11 @@ async def analyze_repo(request: RepoAnalysisRequest):
                 client_data = database.get_client(request.client_id)
                 if client_data:
                     client_context = f"Client: '{client_data['name']}' ({client_data.get('description', '')})"
+
+            # Additional business context from user
+            if request.additional_context:
+                client_context = (client_context + "\n\n" if client_context else "") + \
+                    f"=== BUSINESS CONTEXT PROVIDED BY CLIENT TEAM ===\n{request.additional_context}\n=== END BUSINESS CONTEXT ==="
 
             persona_count = len(agent_engine.PERSONA_CONFIGS)
             yield {
@@ -358,6 +364,96 @@ async def create_github_issues(request: GitHubIssuesRequest):
 
 
 # ─────────────────────────────────────────────
+# Team Kickoff Pack Generator
+# ─────────────────────────────────────────────
+
+class KickoffPackRequest(BaseModel):
+    synthesis_content: str
+    agent_summaries: Optional[dict] = None  # key -> first 500 chars of each agent
+    github_url: Optional[str] = None
+    business_context: Optional[str] = None
+
+KICKOFF_PACK_PROMPT = """You are a Senior Programme Manager and Transformation Lead with 20+ years experience standing up modernisation teams. You have just received a comprehensive AI-generated discovery report for a legacy system modernisation programme.
+
+Your task is to produce a **Team Kickoff Pack** — a concise, actionable mobilisation brief that gets a new team productive from Day 1.
+
+{context_section}
+
+---
+## SYNTHESIS / VERDICT FROM DISCOVERY ENGINE
+{synthesis_content}
+
+---
+{agent_summaries_section}
+
+Produce the kickoff pack with EXACTLY the following sections:
+
+## 🎯 Executive One-Pager
+3–4 sentences the CTO/sponsor can use in a steering committee. What is being modernised, why now, what is the expected outcome, and what is at stake if we don't act.
+
+## 👥 Recommended Team Composition
+Based on the technical findings, specify the exact roles needed (job titles, seniority levels, FTE vs contractor), their primary responsibilities in this programme, and any specialist skills that are non-negotiable. Format as a table: | Role | Seniority | FTE/Contract | Primary Responsibility |
+
+## 📅 Sprint 0 Checklist
+The exact tasks for the first 2 weeks before development starts. Group them by owner (Tech Lead, Architect, BA, DevOps, etc.). Be specific — e.g. "Set up GitHub repo with branch protection rules" not "set up source control".
+
+## 🗺️ RACI Matrix (Top 10 Decisions)
+Identify the 10 most important decisions this programme will face. For each: | Decision | Responsible | Accountable | Consulted | Informed |
+
+## ⚡ Day 1 Decisions Required
+The 5 decisions that MUST be made in the first week or the programme will stall. For each: state the decision, the options, the recommended path, and who must sign off.
+
+## ⚠️ Risk Briefing for New Team Members
+The top 7 risks a new joiner must understand on Day 1. For each: the risk, why it exists (based on the codebase analysis), the mitigation strategy, and the owner.
+
+## 📊 Success Metrics & Reporting Cadence
+How will this programme measure success? Define 5–8 KPIs with baseline (current state), target, and how to measure. Include recommended reporting cadence (daily standups, weekly steering, monthly executive review).
+
+## 🔑 The 3 Things That Will Make or Break This Programme
+Based on the synthesis findings, what are the 3 critical success factors? Be direct and specific."""
+
+@app.post("/api/generate-kickoff-pack")
+async def generate_kickoff_pack(request: KickoffPackRequest):
+    """Use Claude to generate a team mobilisation brief from the discovery report."""
+    if not ENV_ANTHROPIC_KEY:
+        raise HTTPException(status_code=400, detail="Anthropic API key required (ANTHROPIC_API_KEY in .env)")
+
+    context_section = ""
+    if request.github_url:
+        context_section = f"**Repository Under Analysis:** {request.github_url}\n"
+    if request.business_context:
+        context_section += f"\n**Business Context Provided:**\n{request.business_context}\n"
+
+    agent_summaries_section = ""
+    if request.agent_summaries:
+        summaries = []
+        for persona, content in request.agent_summaries.items():
+            if content:
+                summaries.append(f"### {persona.upper()} (excerpt)\n{content[:600]}...\n")
+        if summaries:
+            agent_summaries_section = "## KEY FINDINGS FROM SPECIALIST AGENTS\n" + "\n".join(summaries[:8])
+
+    prompt = KICKOFF_PACK_PROMPT.format(
+        context_section=context_section,
+        synthesis_content=request.synthesis_content[:6000],
+        agent_summaries_section=agent_summaries_section
+    )
+
+    try:
+        client = anthropic_sdk.AsyncAnthropic(api_key=ENV_ANTHROPIC_KEY)
+        message = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=8192,
+            temperature=0.3,
+            system="You are an expert Programme Manager producing a team mobilisation brief. Be concrete, specific, and immediately actionable. Avoid generalities. Reference the specific technical findings from the discovery report.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return {"content": message.content[0].text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────
 # Report History
 # ─────────────────────────────────────────────
 
@@ -378,6 +474,111 @@ def get_report(report_id: int):
 # ─────────────────────────────────────────────
 # Legacy Analysis Route (kept for backward compat)
 # ─────────────────────────────────────────────
+
+@app.post("/api/analyze-files")
+async def analyze_files(
+    gemini_api_key: Optional[str] = Form(None),
+    client_id: Optional[int] = Form(None),
+    text_context: Optional[str] = Form(None),
+    additional_context: Optional[str] = Form(None),
+    files: List[UploadFile] = File([])
+):
+    """
+    Upload local files/folder and run the full SSE agent fleet on them.
+    Mirrors /api/analyze-repo but accepts file uploads instead of a GitHub URL.
+    """
+    gemini_key = gemini_api_key or ENV_GEMINI_KEY
+    if not gemini_key:
+        raise HTTPException(status_code=400, detail="Gemini API Key is required.")
+
+    file_contents = []
+    if files:
+        for file in files:
+            if file.filename:
+                try:
+                    content = await file.read()
+                    filename_lower = file.filename.lower()
+                    ext = '.' + filename_lower.rsplit('.', 1)[-1] if '.' in filename_lower else ''
+                    if ext in agent_engine.SKIP_EXTENSIONS:
+                        continue
+                    try:
+                        decoded = content.decode('utf-8', errors='replace')
+                        if '\x00' in decoded[:500]:
+                            continue
+                        file_contents.append(f"\n{'='*60}\nFILE: {file.filename}\n{'='*60}\n{decoded}\n")
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+
+    code_context = ""
+    if text_context:
+        code_context += text_context + "\n\n"
+    code_context += "".join(file_contents)
+
+    if not code_context.strip():
+        raise HTTPException(status_code=400, detail="No readable files or text provided.")
+
+    # Truncate to same limit as GitHub ingestion
+    if len(code_context) > agent_engine.MAX_TOTAL_CHARS:
+        code_context = code_context[:agent_engine.MAX_TOTAL_CHARS] + f"\n\n--- TRUNCATED at {agent_engine.MAX_TOTAL_CHARS} chars ---"
+
+    async def event_generator():
+        collected_results = {}
+        synthesis_content = ""
+        try:
+            yield {"event": "status", "data": json.dumps({"phase": "cloned", "message": f"Files loaded ({len(code_context):,} characters of source code)"})}
+
+            personas_db = database.get_personas()
+            db_persona_prompts = "".join(f"- {p['role_name']}: {p['system_prompt']}\n" for p in personas_db)
+
+            client_context = ""
+            if client_id:
+                client_data = database.get_client(client_id)
+                if client_data:
+                    client_context = f"Client: '{client_data['name']}' ({client_data.get('description', '')})"
+            if additional_context:
+                client_context = (client_context + "\n\n" if client_context else "") + \
+                    f"=== BUSINESS CONTEXT PROVIDED BY CLIENT TEAM ===\n{additional_context}\n=== END BUSINESS CONTEXT ==="
+
+            persona_count = len(agent_engine.PERSONA_CONFIGS)
+            yield {"event": "status", "data": json.dumps({
+                "phase": "agents_launched",
+                "message": f"Agent fleet launched — {persona_count} autonomous personas researching...",
+                "agents": [{"key": k, "name": v["name"], "emoji": v["emoji"], "status": "thinking"} for k, v in agent_engine.PERSONA_CONFIGS.items()]
+                         + [{"key": "synthesis", "name": agent_engine.SYNTHESIS_CONFIG["name"], "emoji": agent_engine.SYNTHESIS_CONFIG["emoji"], "status": "waiting"}]
+            })}
+
+            async for update in agent_engine.run_agent_fleet(
+                gemini_api_key=gemini_key,
+                anthropic_api_key=ENV_ANTHROPIC_KEY,
+                code_context=code_context,
+                client_context=client_context,
+                db_persona_prompts=db_persona_prompts
+            ):
+                if update["event"] == "agent_result":
+                    result = update["data"]
+                    if result.get("persona") == "synthesis":
+                        synthesis_content = result.get("content", "")
+                    elif result.get("status") == "success":
+                        collected_results[result["persona"]] = result.get("content", "")
+                yield {"event": update["event"], "data": json.dumps(update["data"])}
+
+            if collected_results:
+                database.save_report(
+                    github_url="[local upload]",
+                    client_id=client_id,
+                    results=collected_results,
+                    synthesis_content=synthesis_content
+                )
+
+            yield {"event": "status", "data": json.dumps({"phase": "complete", "message": "All agents have reported. Discovery complete."})}
+
+        except Exception as e:
+            yield {"event": "error", "data": json.dumps({"message": str(e)})}
+
+    return EventSourceResponse(event_generator())
+
 
 @app.post("/api/analyze")
 async def analyze_data(

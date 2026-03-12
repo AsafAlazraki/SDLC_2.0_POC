@@ -1193,6 +1193,23 @@ nav {
     margin-left: 8px;
     white-space: nowrap;
 }
+.copy-btn {
+    font-size: 0.8rem;
+    padding: 2px 7px;
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 5px;
+    color: var(--text-muted);
+    cursor: pointer;
+    margin-left: 4px;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+.copy-btn:hover {
+    background: rgba(255,255,255,0.08);
+    color: var(--text-main);
+    border-color: var(--primary);
+}
 
 /* ─────────────────────────────────────────────────────
    History View
