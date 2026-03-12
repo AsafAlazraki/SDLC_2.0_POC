@@ -7,10 +7,40 @@ import asyncio
 import httpx
 import json
 import re
+import logging
 from typing import List, Dict, Any, Optional, AsyncGenerator
 from google import genai
 from google.genai import types
 import anthropic
+
+logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────
+# Rate Limit Safeguards
+# ─────────────────────────────────────────────
+
+# Max concurrent Anthropic calls — Tier 1 allows 30K input tokens/min.
+# Limiting to 2 concurrent calls prevents bursting over the limit.
+ANTHROPIC_SEMAPHORE: Optional[asyncio.Semaphore] = None
+
+def get_anthropic_semaphore() -> asyncio.Semaphore:
+    global ANTHROPIC_SEMAPHORE
+    if ANTHROPIC_SEMAPHORE is None:
+        ANTHROPIC_SEMAPHORE = asyncio.Semaphore(2)
+    return ANTHROPIC_SEMAPHORE
+
+# Context size limits — keeps individual prompt token counts reasonable.
+# ~4 chars per token; 60K chars ≈ 15K tokens per Claude agent call.
+ANTHROPIC_MAX_CONTEXT_CHARS = 60_000
+# Gemini is more generous; keep a higher cap.
+GEMINI_MAX_CONTEXT_CHARS = 800_000
+
+# Retry policy for rate limit (429) errors
+ANTHROPIC_MAX_RETRIES = 3
+ANTHROPIC_RETRY_BASE_DELAY = 15  # seconds — doubles each retry (15, 30, 60)
+
+# Stagger between successive Anthropic agent launches (seconds)
+ANTHROPIC_LAUNCH_STAGGER = 4
 
 # ─────────────────────────────────────────────
 # GitHub Repository Ingestion
@@ -918,36 +948,100 @@ Below is the codebase you are analysing. Study every file carefully, then produc
 
 Now produce your analysis. Be forensically specific — reference actual file paths, function names, and line-level patterns you observed. Write with the authority and precision of the world's best practitioner in your role. Every recommendation must be actionable, grounded in your research, and tailored to what you specifically found in THIS codebase."""
 
+    # ── Context truncation — prevents oversized prompts blowing token limits ──
+    truncated_context = code_context
+    if model_type == "anthropic" and anthropic_api_key:
+        if len(code_context) > ANTHROPIC_MAX_CONTEXT_CHARS:
+            truncated_context = code_context[:ANTHROPIC_MAX_CONTEXT_CHARS]
+            truncated_context += f"\n\n[... CODEBASE TRUNCATED — {len(code_context):,} chars total, showing first {ANTHROPIC_MAX_CONTEXT_CHARS:,} chars to stay within token limits ...]"
+    elif len(code_context) > GEMINI_MAX_CONTEXT_CHARS:
+        truncated_context = code_context[:GEMINI_MAX_CONTEXT_CHARS]
+        truncated_context += f"\n\n[... CODEBASE TRUNCATED at {GEMINI_MAX_CONTEXT_CHARS:,} chars ...]"
+
+    # Rebuild prompt with (potentially) truncated context
+    prompt = prompt.replace(
+        f"--- BEGIN CODEBASE ---\n{code_context}\n--- END CODEBASE ---",
+        f"--- BEGIN CODEBASE ---\n{truncated_context}\n--- END CODEBASE ---"
+    )
+
+    async def call_gemini(reason: str = "") -> str:
+        """Run this agent on Gemini (primary path or fallback)."""
+        label = f"Researching Best Practices (Gemini){' — Claude fallback' if reason else ''}..."
+        await update_status(label)
+        gemini_client = genai.Client(api_key=gemini_api_key)
+        grounding_tool = types.Tool(google_search=types.GoogleSearch())
+        response = await gemini_client.aio.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[grounding_tool],
+                temperature=0.3
+            ),
+        )
+        return response.text
+
     try:
         await update_status("Analyzing Source Code...")
-        await asyncio.sleep(0.5) # Small padding for UI visibility
+        await asyncio.sleep(0.5)  # Small padding for UI visibility
 
         if model_type == "anthropic" and anthropic_api_key:
-            await update_status("Drafting Strategic Report (Claude)...")
-            client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
-            message = await client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=4096,
-                temperature=0.3,
-                system="You are a senior technical discovery agent. Provide deep, structured analysis.",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            content = message.content[0].text
+            # ── Semaphore: max 2 concurrent Anthropic calls ──────────────────
+            semaphore = get_anthropic_semaphore()
+            last_error = None
+
+            for attempt in range(1, ANTHROPIC_MAX_RETRIES + 1):
+                try:
+                    async with semaphore:
+                        await update_status(
+                            f"Drafting Strategic Report (Claude)"
+                            + (f" — retry {attempt}/{ANTHROPIC_MAX_RETRIES}" if attempt > 1 else "")
+                            + "..."
+                        )
+                        client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
+                        message = await client.messages.create(
+                            model="claude-sonnet-4-6",
+                            max_tokens=4096,
+                            temperature=0.3,
+                            system="You are a senior technical discovery agent. Provide deep, structured analysis.",
+                            messages=[{"role": "user", "content": prompt}]
+                        )
+                        content = message.content[0].text
+                        break  # Success — exit retry loop
+
+                except anthropic.RateLimitError as e:
+                    last_error = e
+                    delay = ANTHROPIC_RETRY_BASE_DELAY * (2 ** (attempt - 1))  # 15, 30, 60s
+                    logger.warning(
+                        f"[{persona_key}] Anthropic 429 rate limit on attempt {attempt}/{ANTHROPIC_MAX_RETRIES}. "
+                        f"Waiting {delay}s before retry."
+                    )
+                    await update_status(f"Rate limited — waiting {delay}s before retry {attempt}/{ANTHROPIC_MAX_RETRIES}...")
+                    if attempt < ANTHROPIC_MAX_RETRIES:
+                        await asyncio.sleep(delay)
+                    else:
+                        # All retries exhausted — fall back to Gemini
+                        logger.warning(f"[{persona_key}] All Claude retries exhausted. Falling back to Gemini.")
+                        await update_status("Claude retries exhausted — falling back to Gemini research...")
+                        content = await call_gemini(reason="rate_limit_fallback")
+
+                except anthropic.APIStatusError as e:
+                    if e.status_code == 529:  # Anthropic overloaded
+                        last_error = e
+                        delay = ANTHROPIC_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                        await update_status(f"Claude overloaded — waiting {delay}s before retry {attempt}/{ANTHROPIC_MAX_RETRIES}...")
+                        if attempt < ANTHROPIC_MAX_RETRIES:
+                            await asyncio.sleep(delay)
+                        else:
+                            content = await call_gemini(reason="overload_fallback")
+                    else:
+                        raise  # Non-retriable API error
+            else:
+                # Loop finished without break (shouldn't happen but safety net)
+                content = await call_gemini(reason="loop_exhausted")
+
         else:
-            # Default to Gemini (and handle case where Anthropic key is missing)
-            await update_status("Researching Best Practices (Gemini)...")
-            gemini_client = genai.Client(api_key=gemini_api_key)
-            grounding_tool = types.Tool(google_search=types.GoogleSearch())
-            
-            response = await gemini_client.aio.models.generate_content(
-                model='gemini-2.0-flash',
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[grounding_tool],
-                    temperature=0.3
-                ),
-            )
-            content = response.text
+            # Gemini primary path (or Anthropic key missing)
+            content = await call_gemini()
 
         return {
             "persona": persona_key,
@@ -1041,31 +1135,61 @@ Specific, measurable outcomes to track across: engineering velocity (DORA), secu
 ### The Bottom Line
 If this organisation can only do THREE things this quarter, what are they and exactly why? Be direct. Commit to a recommendation. No hedging."""
 
-    try:
-        client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
-        message = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=8192,
-            temperature=0.2,
-            system="You are a Principal CTO and technical advisor synthesising expert panel findings into a unified master action plan. Be authoritative, specific, and decisive. Resolve contradictions explicitly. Name files, tools, and patterns by name.",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        content = message.content[0].text
-        return {
-            "persona": "synthesis",
-            "name": SYNTHESIS_CONFIG["name"],
-            "emoji": SYNTHESIS_CONFIG["emoji"],
-            "status": "success",
-            "content": content
-        }
-    except Exception as e:
-        return {
-            "persona": "synthesis",
-            "name": SYNTHESIS_CONFIG["name"],
-            "emoji": SYNTHESIS_CONFIG["emoji"],
-            "status": "error",
-            "content": f"Synthesis error: {str(e)}"
-        }
+    # Synthesis uses the largest prompt — retry aggressively on rate limits
+    last_error = None
+    for attempt in range(1, ANTHROPIC_MAX_RETRIES + 1):
+        try:
+            client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
+            message = await client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=8192,
+                temperature=0.2,
+                system="You are a Principal CTO and technical advisor synthesising expert panel findings into a unified master action plan. Be authoritative, specific, and decisive. Resolve contradictions explicitly. Name files, tools, and patterns by name.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            content = message.content[0].text
+            return {
+                "persona": "synthesis",
+                "name": SYNTHESIS_CONFIG["name"],
+                "emoji": SYNTHESIS_CONFIG["emoji"],
+                "status": "success",
+                "content": content
+            }
+
+        except (anthropic.RateLimitError, anthropic.APIStatusError) as e:
+            is_retriable = isinstance(e, anthropic.RateLimitError) or (
+                isinstance(e, anthropic.APIStatusError) and e.status_code == 529
+            )
+            if is_retriable and attempt < ANTHROPIC_MAX_RETRIES:
+                delay = ANTHROPIC_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                logger.warning(f"[synthesis] Rate limited on attempt {attempt}. Waiting {delay}s.")
+                await asyncio.sleep(delay)
+                last_error = e
+            else:
+                return {
+                    "persona": "synthesis",
+                    "name": SYNTHESIS_CONFIG["name"],
+                    "emoji": SYNTHESIS_CONFIG["emoji"],
+                    "status": "error",
+                    "content": f"Synthesis error after {attempt} attempts: {str(e)}"
+                }
+
+        except Exception as e:
+            return {
+                "persona": "synthesis",
+                "name": SYNTHESIS_CONFIG["name"],
+                "emoji": SYNTHESIS_CONFIG["emoji"],
+                "status": "error",
+                "content": f"Synthesis error: {str(e)}"
+            }
+
+    return {
+        "persona": "synthesis",
+        "name": SYNTHESIS_CONFIG["name"],
+        "emoji": SYNTHESIS_CONFIG["emoji"],
+        "status": "error",
+        "content": f"Synthesis failed after {ANTHROPIC_MAX_RETRIES} retries: {str(last_error)}"
+    }
 
 
 async def run_agent_fleet(
@@ -1092,21 +1216,35 @@ async def run_agent_fleet(
             }
         })
 
-    # Launch all 15 persona agents in parallel
-    tasks = []
-    for persona_key in PERSONA_CONFIGS:
-        task = asyncio.create_task(
-            run_single_agent(
-                persona_key,
-                gemini_api_key,
-                anthropic_api_key,
-                code_context,
-                client_context,
-                db_persona_prompts,
-                status_callback
-            )
+    # ── Staggered launch — Gemini agents fire immediately (no shared rate limit).
+    # Anthropic agents use wrapper coroutines with built-in stagger delays so ALL
+    # tasks are created upfront (needed for as_completed to track them all).
+    anthropic_personas = [k for k, v in PERSONA_CONFIGS.items() if v.get("model") == "anthropic"]
+    gemini_personas = [k for k in PERSONA_CONFIGS if k not in anthropic_personas]
+
+    async def staggered_agent(persona_key: str, stagger_delay: float):
+        """Wrapper that waits stagger_delay seconds before running the agent."""
+        if stagger_delay > 0:
+            await asyncio.sleep(stagger_delay)
+        return await run_single_agent(
+            persona_key,
+            gemini_api_key,
+            anthropic_api_key,
+            code_context,
+            client_context,
+            db_persona_prompts,
+            status_callback
         )
-        tasks.append(task)
+
+    tasks = []
+    # Gemini agents: no delay
+    for persona_key in gemini_personas:
+        tasks.append(asyncio.create_task(staggered_agent(persona_key, 0)))
+
+    # Anthropic agents: stagger each one by ANTHROPIC_LAUNCH_STAGGER seconds
+    for i, persona_key in enumerate(anthropic_personas):
+        delay = i * ANTHROPIC_LAUNCH_STAGGER
+        tasks.append(asyncio.create_task(staggered_agent(persona_key, delay)))
 
     async def monitor_tasks():
         for completed_task in asyncio.as_completed(tasks):
