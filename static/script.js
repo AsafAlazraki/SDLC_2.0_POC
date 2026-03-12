@@ -234,7 +234,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (eventType === 'agent_result') {
                 renderAgentResult(data);
-                const total = 11; 
+                const total = 15;
                 const doneCount = document.querySelectorAll('.agent-status-card.done').length;
                 const progress = (doneCount / total) * 100;
                 const progressFill = document.getElementById('fleet-progress-fill');
