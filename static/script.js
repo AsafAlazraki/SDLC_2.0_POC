@@ -254,6 +254,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         updateFleetStatusMessage("Discovery Complete ✓");
                         const fill = document.getElementById('fleet-progress-fill');
                         if (fill) fill.style.width = '100%';
+                        // Force-mark any cards still spinning as done (their result
+                        // events may have been lost mid-stream) and reveal meeting room
+                        document.querySelectorAll('.agent-status-card:not(.done)').forEach(card => {
+                            card.classList.add('done');
+                            const stateEl = card.querySelector('.agent-state');
+                            if (stateEl) stateEl.textContent = 'READY';
+                            const spinner = card.querySelector('.thinking-spinner');
+                            if (spinner) spinner.remove();
+                        });
+                        revealMeetingRoom();
                     }, 500);
                 }
             }
@@ -265,6 +275,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const progress = (doneCount / total) * 100;
                 const progressFill = document.getElementById('fleet-progress-fill');
                 if (progressFill) progressFill.style.width = `${progress}%`;
+                // Synthesis result = everything is done regardless of card state
+                if (data.persona === 'synthesis') revealMeetingRoom();
             }
 
             if (eventType === 'agent_update') {
