@@ -544,6 +544,7 @@ async def meeting_debate(request: MeetingDebateRequest):
 
     # Build dynamic tension points by extracting what agents actually found
     has_innovation_scout = "ai_innovation_scout" in request.agent_reports
+    has_outsystems = "outsystems_architect" in request.agent_reports or "outsystems_migration" in request.agent_reports
 
     prompt = f"""You are the moderator of a CTO-level discovery board meeting. These {len(agent_summaries)} expert agents have each independently analysed the same codebase and now sit around the same table. They have real findings, real professional opinions, and — critically — genuine disagreements.
 
@@ -556,22 +557,23 @@ GROUND RULES FOR EVERY TURN:
 4. Concessions are allowed and realistic: "That's a fair point about X, but what you're not accounting for is..."
 5. Emotions exist but are professional: frustration at being dismissed, satisfaction when making a point land.
 6. The AI Innovation Scout (if present) must challenge at least two traditional recommendations — asking "but does this need to be built at all, or does an AI tool already solve this?"
+7. The OutSystems specialists (if present) must present the platform case — including its real limitations — and be challenged on build complexity, vendor lock-in, and developer experience.
 
 TENSION ARCS TO WEAVE THROUGH (use the actual findings below to make these specific):
 - ARC 1 — Speed vs Safety: Someone pushing for velocity clashes with someone demanding quality/security gates. Both have evidence.
-- ARC 2 — Build vs Buy vs AI: A traditionalist clashes with the Innovation Scout on whether to engineer a solution or adopt an AI/low-code platform. This is unresolved — don't let synthesis hand-wave it away.
+- ARC 2 — Build vs Buy vs AI vs Low-Code: The traditionalists, the AI Innovation Scout, and the OutSystems specialists all have different answers to the same question. This is the central unresolved tension — don't let synthesis hand-wave it away.
 - ARC 3 — Investment levels: One agent argues for conservative incremental improvements; another argues the codebase needs a more transformative investment. Different risk appetites, both defensible.
 - ARC 4 — One genuine surprise: An unexpected alliance — two agents who seem opposed actually agree on something, or an agent concedes a point they initially dismissed.
 
 DEBATE FORMAT:
 - 2-4 sentences per turn, plain conversational speech (this is spoken aloud via TTS — no markdown, no bullet points, no headers)
 - Start responses with direct address: "I hear what [name] is saying, but..." or "I have to push back on that..."
-- Synthesis speaks LAST and makes binding decisions — it resolves the Build vs Buy arc definitively, names the three things that must happen first, and is direct about what was NOT resolved and why.
+- Synthesis speaks LAST and makes binding decisions — it resolves the Build vs Buy vs Low-Code arc definitively, names the three things that must happen first, and is direct about what was NOT resolved and why.
 
 Return ONLY a valid JSON array (no markdown wrapping, no explanation):
 [{{"speaker": "security", "text": "I need to address something the performance engineer said..."}}, ...]
 
-Available speaker keys: architect, ba, qa, security, tech_docs, data_engineering, devops, product_management, ui_ux, compliance, secops, performance_engineer, cost_analyst, api_designer, tech_lead{", ai_innovation_scout" if has_innovation_scout else ""}, synthesis
+Available speaker keys: architect, ba, qa, security, tech_docs, data_engineering, devops, product_management, ui_ux, compliance, secops, performance_engineer, cost_analyst, api_designer, tech_lead{", ai_innovation_scout" if has_innovation_scout else ""}{", outsystems_architect, outsystems_migration" if has_outsystems else ""}, synthesis
 
 AGENT REPORTS (use these specifics in the debate — agents must cite their own findings):
 {chr(10).join(agent_summaries)}"""
@@ -596,10 +598,12 @@ AGENT REPORTS (use these specifics in the debate — agents must cite their own 
     except Exception:
         turns = [
             {"speaker": "architect", "text": "I have to be direct: the architectural debt I found is not something we can patch around. This system has grown organically and the coupling between components means every change risks cascading failures. We need a clear modernisation path."},
-            {"speaker": "ai_innovation_scout" if has_innovation_scout else "security", "text": "I hear the architect, but before we commit to months of refactoring, I want to challenge the assumption that we build everything ourselves. At least three of the components I identified have direct low-code or AI-native alternatives that would take weeks, not quarters."},
-            {"speaker": "tech_lead", "text": "That's a fair challenge, and I've seen low-code succeed in the right contexts. But the core business logic here is genuinely differentiating — that's not where we should trade control for convenience. The question is what counts as core."},
+            {"speaker": "ai_innovation_scout" if has_innovation_scout else "tech_lead", "text": "I hear the architect, but before we commit to months of refactoring, I want to challenge the assumption that we build everything ourselves. At least three of the components I identified have direct low-code or AI-native alternatives that would take weeks, not quarters."},
+            {"speaker": "outsystems_architect" if has_outsystems else "tech_lead", "text": "And I'd go further — I've done the domain mapping for this application, and a significant portion of it would be a clean fit for OutSystems ODC. The entity model translates well, there are Forge components for two of the integrations, and the team could be building production features in OutSystems within four weeks of starting. That's not a sales pitch, that's a feasibility assessment based on what I actually found."},
+            {"speaker": "tech_lead", "text": "I have to push back on that. OutSystems is a real option for parts of this, but the core differentiating logic here is exactly the kind of thing that hits the platform's ceiling. I've seen teams migrate to OutSystems and then spend six months building Extensions just to get back to parity. The question is which parts."},
             {"speaker": "security", "text": "I want to make sure we don't lose sight of the immediate risk. Regardless of which path we choose, the authentication gaps I found represent legal exposure today. That's not a path discussion — that's a this-sprint fix."},
-            {"speaker": "synthesis", "text": "Here is my binding read: security remediation is non-negotiable and starts immediately regardless of strategic direction. On the build vs. buy question — I agree with the tech lead that core differentiating logic stays in-house, but the innovation scout has identified at least two non-core areas where we should run a low-code pilot in the next quarter before committing to custom builds. The architecture modernisation follows after that foundation is set."}
+            {"speaker": "outsystems_migration" if has_outsystems else "cost_analyst", "text": "I agree with security, and I'll add this: if we're seriously considering OutSystems, the migration complexity scoring I ran shows a 12-sprint programme for a full migration. That's not a quick win. The smarter approach is a selective migration — move new features to OutSystems while we stabilise the existing core."},
+            {"speaker": "synthesis", "text": "Here is my binding read: security remediation is non-negotiable and starts this sprint. On the platform question — a full rewrite in any direction is off the table in the short term. The right answer is a selective strategy: AI tooling improves the existing team's velocity immediately, OutSystems gets a focused pilot on one non-core domain in the next quarter, and we reassess full migration at the six-month mark with real data. The architect's modernisation roadmap proceeds in parallel. No single platform wins today — we run the experiment."}
         ]
 
     enriched = []

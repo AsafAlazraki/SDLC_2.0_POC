@@ -143,7 +143,7 @@ Before the 15 agents launch, `run_recon_agent()` makes a fast, cheap Gemini call
 
 The recon result is also yielded as an `agent_update` event with key `"recon"` and the raw JSON in `data.recon`. The frontend shows its progress in the fleet status bar.
 
-### The 16 Parallel Personas
+### The 18 Parallel Personas
 
 | Key | Name | Model | Primary Domain | Context Limit |
 |---|---|---|---|---|
@@ -163,6 +163,8 @@ The recon result is also yielded as an `agent_update` event with key `"recon"` a
 | `api_designer` | API Designer | Claude | REST audit, OpenAPI spec, DX | 80K chars |
 | `tech_lead` | Tech Lead | Claude | Codebase health, tech debt, team topology | 60K chars |
 | `ai_innovation_scout` | AI Innovation Scout | Gemini | AI/low-code opportunities, 3 strategic paths | 70K chars |
+| `outsystems_architect` | OutSystems Solution Architect | Gemini | Domain modelling, ODC vs O11, Forge audit, architecture blueprint | 80K chars |
+| `outsystems_migration` | OutSystems Migration Strategist | Gemini | Migration roadmap, complexity scoring, commercial model, data migration | 80K chars |
 
 ### Forward-Thinking Technology Mandate (All Agents)
 
@@ -172,9 +174,9 @@ Both the Gemini and Anthropic research mandates now include an explicit forward-
 - Cite specific modern tools (Cursor, Copilot, Retool, n8n, Modal, v0.dev, Bolt.new) with honest trade-off analysis
 - Challenge "we need to build this" assumptions by asking if a SaaS, API, or AI agent already solves it
 
-### The 17th Agent — Synthesis ("The Verdict")
+### The 19th Agent — Synthesis ("The Verdict")
 
-After all 16 complete, `run_synthesis_agent()` runs sequentially with **Claude Sonnet 4.6 + Extended Thinking**.
+After all 18 parallel agents complete, `run_synthesis_agent()` runs sequentially with **Claude Sonnet 4.6 + Extended Thinking**.
 
 - **Extended Thinking**: 8,000-token private reasoning budget (`thinking={"type":"enabled","budget_tokens":8000}`)
 - **Output budget**: 10,000 tokens (`max_tokens = 8000 + 10000 = 18000`)
@@ -182,12 +184,35 @@ After all 16 complete, `run_synthesis_agent()` runs sequentially with **Claude S
 - Thinking blocks are stripped from the response before storing — only the final text is shown
 - Produces: Executive Summary, Consensus Findings (3+ agents), Contradictions Resolved, Blind Spots, **Three Strategic Paths Forward** (Conservative/Balanced/Transformative), Critical Path (sprint/quarter/long-term), Top 10 Risks, Quick Wins, Success Metrics, The Bottom Line
 
-### Three Strategic Paths (NEW)
+### Three Strategic Paths
 
-The Synthesis agent now produces three distinct investment paths for every analysis:
+The Synthesis agent produces three distinct investment paths for every analysis:
 - **PATH A — Conservative**: <$75K, 6 months, existing team, AI tools at the edges only
 - **PATH B — Balanced**: $75K–$250K, 12 months, AI-augmented workflows, low-code for non-core features
 - **PATH C — Transformative**: $250K+, 18-24 months, AI-native rebuild, greenfield for differentiating components
+
+### OutSystems / ODC Specialist Sub-Fleet
+
+Two dedicated Gemini agents (with live Google Search grounding) run alongside the main 16-agent fleet and assess the codebase specifically through the OutSystems platform lens. They are not a replacement for the AI Innovation Scout — they are a more focused, platform-specific deep-dive:
+
+**`outsystems_architect` — OutSystems Solution Architect**
+- Maps all entities, services, integrations, timers, and workflows to their OutSystems equivalents
+- Audits the Forge marketplace for existing components that replace custom-built features
+- Produces a full 4-Layer Guided Framework architecture blueprint (Foundation / Core Widgets / Core Services / End User)
+- Assesses ODC vs O11 fit with a definitive recommendation
+- Identifies what would require C# Extensions and what the application would lose by moving to OutSystems
+- Delivers an honest **Feasibility Rating**: Excellent Fit / Good Fit / Partial Fit / Poor Fit
+
+**`outsystems_migration` — OutSystems Migration Strategist**
+- Delivers a **Migration Verdict**: Full Migration / Selective Migration / Integration Only / Do Not Migrate
+- Scores every major component for migration complexity (Low/Medium/High/Very High)
+- Produces a phased 12-sprint migration roadmap with go/no-go checkpoints
+- Analyses the commercial model: licencing costs, build effort, break-even analysis
+- Designs the data migration strategy (Bootstrap approach vs ETL, zero-downtime cutover)
+- Identifies team upskilling requirements, OutSystems certification paths, and relevant partners
+- Produces a 5-item risk register with mitigations
+
+**Debate integration**: Both OutSystems agents participate in the boardroom debate. The `outsystems_architect` presents the platform case; the `outsystems_migration` challenges on timelines and cost. They are directly challenged by the `tech_lead` on vendor lock-in and by the `cost_analyst` on ROI. The `ai_innovation_scout` challenges on whether a low-code platform is the right low-code choice vs pure AI tooling. Synthesis resolves — or declares genuinely unresolved — the Build vs Buy vs AI vs Low-Code arc.
 
 ### Persona-Aware Context Filtering (NEW)
 
@@ -252,7 +277,7 @@ Single HTML page (`index.html`) with vanilla JS (`script.js`, loaded as ES modul
 ### Views (nav-based routing)
 
 - `view-ingestion` — GitHub URL input + legacy file upload
-- `view-report` — The main discovery dashboard with all 16 report cards
+- `view-report` — The main discovery dashboard with all 18 report cards (16 core + 2 OutSystems)
 - `view-how-it-works` — Full deep-dive explainer page (fully redesigned, see below)
 - `view-admin` — Client/persona creation
 - `view-history` — Past analysis runs from Supabase
@@ -288,14 +313,14 @@ const state = {
 
 ### Agent Count
 
-`const total = 16` in `script.js` — 15 parallel personas + 1 synthesis agent. Progress bar tracks this.
+`const total = 19` in `script.js` — 18 parallel personas (15 core + AI Innovation Scout + 2 OutSystems specialists) + 1 synthesis agent. Progress bar tracks this.
 
 ---
 
 ## Seven Major Features (All Implemented)
 
 ### 1. Synthesis Agent — "The Verdict" (Extended Thinking enabled)
-- 16th agent, runs after the 15 complete
+- 19th agent, runs after all 18 parallel agents complete
 - Claude Sonnet 4.6, extended thinking with 8K reasoning budget, 10K output budget
 - Produces 9 structured sections from Executive Summary to The Bottom Line
 - Displayed with special gold/amber styling in a `verdict-card`
@@ -315,7 +340,7 @@ const state = {
 ### 4. Report Persistence & History
 - Every completed analysis is automatically saved to the `reports` Supabase table
 - History view shows past runs with repo URL, date, client
-- Clicking a history item re-renders all 16 report cards from saved data
+- Clicking a history item re-renders all 18 report cards from saved data
 
 ### 5. Cross-Agent Contradiction Resolution (via Synthesis)
 - The Synthesis agent is explicitly tasked with identifying where agents disagreed
@@ -323,7 +348,7 @@ const state = {
 - Each contradiction is named, resolved, and the reasoning is explained
 
 ### 6. Persona-Aware Context Filtering
-- Each of the 15 agents receives a relevance-scored slice of the codebase
+- Each of the 18 parallel agents receives a relevance-scored slice of the codebase
 - Files are sorted by domain relevance, not by file system order
 - Dramatically improves analysis quality on large repos
 
