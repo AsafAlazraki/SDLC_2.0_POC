@@ -1,3 +1,5 @@
+import { getAvatarSVG } from './avatars.js';
+
 // Wait for DOM
 document.addEventListener('DOMContentLoaded', () => {
     
@@ -1212,11 +1214,14 @@ document.addEventListener('DOMContentLoaded', () => {
             seat.id = `mr-seat-${key}`;
             seat.style.left = `${x}%`;
             seat.style.top = `${y}%`;
+
+            // Use SVG avatar with emoji fallback
+            const avatarSvg = getAvatarSVG(key);
             seat.innerHTML = `
-                <div class="mr-avatar" data-key="${key}" title="${cfg.name || key}">
-                    <span class="mr-av-emoji">${cfg.emoji || '🤖'}</span>
+                <div class="mr-avatar mr-avatar-svg" data-key="${key}" title="${cfg.name || key}">
+                    ${avatarSvg}
                 </div>
-                <div class="mr-av-name">${(cfg.name || key).replace('Solutions ', '').replace(' Engineer', '').replace(' Analyst', '').replace(' Manager', '').replace(' Designer', '').replace(' Lead', '')}</div>
+                <div class="mr-av-name">${(cfg.name || key).replace('Solutions ', '').replace('OutSystems ', 'OS ').replace(' Engineer', '').replace(' Analyst', '').replace(' Manager', '').replace(' Designer', '').replace(' Lead', '').replace(' Strategist', '')}</div>
             `;
             // Click to jump to their report
             seat.querySelector('.mr-avatar').addEventListener('click', () => {
@@ -1286,12 +1291,22 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function updateSpeechPanel(emoji, name, text) {
+    function updateSpeechPanel(emoji, name, text, speakerKey) {
         const emojiEl = document.getElementById('mr-speaker-emoji');
         const nameEl = document.getElementById('mr-speaker-name');
         const textEl = document.getElementById('mr-speech-text');
         const dots = document.getElementById('mr-speaking-dots');
-        if (emojiEl) emojiEl.textContent = emoji;
+        // Show mini SVG avatar in speech header if available
+        if (emojiEl) {
+            if (speakerKey) {
+                const miniSvg = getAvatarSVG(speakerKey);
+                emojiEl.innerHTML = miniSvg;
+                emojiEl.classList.add('mr-speaker-avatar');
+            } else {
+                emojiEl.textContent = emoji;
+                emojiEl.classList.remove('mr-speaker-avatar');
+            }
+        }
         if (nameEl) nameEl.textContent = name;
         if (textEl) textEl.textContent = text;
         if (dots) dots.style.display = meetingState.isMuted ? 'none' : 'inline-flex';
@@ -1375,7 +1390,7 @@ document.addEventListener('DOMContentLoaded', () => {
             meetingState.skipRequested = false;
 
             highlightSpeaker(turn.speaker);
-            updateSpeechPanel(turn.emoji, turn.name, turn.text);
+            updateSpeechPanel(turn.emoji, turn.name, turn.text, turn.speaker);
             addToTranscript(turn.emoji, turn.name, turn.text);
 
             speak(turn.text, turn.speaker, () => {
@@ -1502,7 +1517,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await res.json();
 
             highlightSpeaker(data.agent_key);
-            updateSpeechPanel(data.emoji, data.name, data.answer);
+            updateSpeechPanel(data.emoji, data.name, data.answer, data.agent_key);
             addToQALog(question, data.emoji, data.name, data.answer);
             speak(data.answer, data.agent_key, () => {
                 highlightSpeaker(null);

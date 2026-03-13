@@ -1525,41 +1525,104 @@ nav {
 .mr-agent-seat:hover { transform: translate(-50%, -50%) scale(1.08); }
 
 .mr-avatar {
-    width: 48px; height: 48px;
+    width: 56px; height: 56px;
     border-radius: 50%;
     background: rgba(255,255,255,0.04);
-    border: 2px solid rgba(255,255,255,0.1);
+    border: 2px solid rgba(255,255,255,0.12);
     display: flex; align-items: center; justify-content: center;
     font-size: 1.35rem;
     transition: border-color 0.3s, box-shadow 0.3s, transform 0.2s;
     cursor: pointer;
+    overflow: hidden;
 }
-.mr-avatar:hover { border-color: var(--primary); }
+.mr-avatar:hover {
+    border-color: var(--primary);
+    transform: scale(1.08);
+}
+
+/* SVG avatar inside the circle */
+.mr-avatar-svg {
+    padding: 0;
+    background: transparent;
+}
+.mr-avatar-svg .agent-avatar-svg {
+    width: 100%; height: 100%;
+    display: block;
+    border-radius: 50%;
+}
+
 .mr-av-name {
     font-size: 0.6rem;
     color: var(--text-muted);
     text-align: center;
-    max-width: 72px;
+    max-width: 76px;
     line-height: 1.2;
     font-family: 'Space Grotesk', sans-serif;
 }
 
 /* Synthesis gets gold treatment */
 .mr-seat-synthesis .mr-avatar {
-    border-color: rgba(255, 215, 0, 0.3);
-    background: rgba(255, 215, 0, 0.06);
-    width: 54px; height: 54px;
+    border-color: rgba(255, 215, 0, 0.35);
+    width: 64px; height: 64px;
     font-size: 1.5rem;
+    box-shadow: 0 0 12px rgba(255, 215, 0, 0.15);
 }
-.mr-seat-synthesis .mr-av-name { color: rgba(255, 215, 0, 0.6); }
+.mr-seat-synthesis .mr-av-name { color: rgba(255, 215, 0, 0.7); font-weight: 600; }
 
-/* Speaking state */
+/* ── Speaking state ────────────────────────── */
 .mr-agent-seat.mr-speaking .mr-avatar {
     border-color: var(--primary);
     box-shadow: 0 0 0 3px rgba(0, 242, 255, 0.2), 0 0 24px rgba(0, 242, 255, 0.4);
     animation: mr-speak-pulse 1.5s ease-in-out infinite;
 }
-.mr-agent-seat.mr-speaking .mr-av-name { color: var(--primary); }
+.mr-agent-seat.mr-speaking .mr-av-name { color: var(--primary); font-weight: 600; }
+
+/* Mouth animation — activated when parent seat has .mr-speaking */
+.mr-agent-seat.mr-speaking .avatar-mouth {
+    animation: avatar-talk 0.35s ease-in-out infinite alternate;
+    transform-box: fill-box;
+    transform-origin: center center;
+}
+@keyframes avatar-talk {
+    0%   { transform: scaleY(1); }
+    100% { transform: scaleY(3.5); }
+}
+
+/* Eye blink — staggered per agent via inline style in avatar SVG */
+@keyframes avatar-blink {
+    0%, 93%, 100% { transform: scaleY(1); }
+    96%           { transform: scaleY(0.1); }
+}
+
+/* Subtle idle breathing on all avatars */
+.mr-avatar-svg .agent-avatar-svg {
+    animation: avatar-breathe 4s ease-in-out infinite;
+}
+@keyframes avatar-breathe {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.015); }
+}
+
+/* Speech panel mini avatar */
+.mr-speaker-avatar {
+    width: 36px; height: 36px;
+    display: inline-flex !important;
+    border-radius: 50%;
+    overflow: hidden;
+    vertical-align: middle;
+    flex-shrink: 0;
+    border: 1.5px solid var(--primary);
+}
+.mr-speaker-avatar .agent-avatar-svg {
+    width: 100%; height: 100%;
+    display: block;
+}
+/* Make the speech panel avatar mouth animate too */
+.mr-speaker-avatar .avatar-mouth {
+    animation: avatar-talk 0.35s ease-in-out infinite alternate;
+    transform-box: fill-box;
+    transform-origin: center center;
+}
 
 @keyframes mr-speak-pulse {
     0%, 100% { box-shadow: 0 0 0 3px rgba(0, 242, 255, 0.2), 0 0 24px rgba(0, 242, 255, 0.4); }
@@ -1598,7 +1661,7 @@ nav {
     font-family: 'Space Grotesk', sans-serif;
     font-size: 1rem;
 }
-#mr-speaker-emoji { font-size: 1.4rem; }
+#mr-speaker-emoji { font-size: 1.4rem; line-height: 1; }
 #mr-speaker-name { color: var(--primary); }
 
 /* Animated speaking dots */
