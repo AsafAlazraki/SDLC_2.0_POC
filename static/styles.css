@@ -1708,3 +1708,276 @@ nav {
     .mr-phase-bar { flex-wrap: wrap; gap: 6px; }
     .mr-speed-wrap input[type=range] { width: 60px; }
 }
+
+/* ─────────────────────────────────────────────
+   How It Works — Forward-Thinking Mandate section
+   ───────────────────────────────────────────── */
+.hiw-mandate-intro {
+    font-size: 0.95rem;
+    color: var(--text-muted);
+    line-height: 1.7;
+    margin-bottom: 28px;
+    max-width: 820px;
+}
+.hiw-mandate-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 18px;
+    margin-bottom: 36px;
+}
+.hiw-mandate-item {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    padding: 20px;
+}
+.hiw-mandate-icon {
+    font-size: 1.8rem;
+    margin-bottom: 10px;
+}
+.hiw-mandate-item strong {
+    display: block;
+    color: var(--text-main);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.95rem;
+    margin-bottom: 8px;
+}
+.hiw-mandate-item p {
+    font-size: 0.83rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin: 0;
+}
+.hiw-mandate-tiers {
+    background: rgba(0, 212, 255, 0.04);
+    border: 1px solid rgba(0, 212, 255, 0.15);
+    border-radius: 14px;
+    padding: 24px;
+}
+.hiw-mandate-tiers h5 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.85rem;
+    letter-spacing: 0.06em;
+    color: var(--primary);
+    margin-bottom: 18px;
+    text-transform: uppercase;
+}
+.hiw-tier-row {
+    display: flex;
+    align-items: stretch;
+    gap: 12px;
+}
+.hiw-tier-item {
+    flex: 1;
+    border-radius: 10px;
+    padding: 16px;
+}
+.hiw-tier-trad  { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); }
+.hiw-tier-aug   { background: rgba(0, 212, 255, 0.07); border: 1px solid rgba(0, 212, 255, 0.25); }
+.hiw-tier-native { background: rgba(160, 80, 255, 0.08); border: 1px solid rgba(160, 80, 255, 0.3); }
+.hiw-tier-label {
+    display: inline-block;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border-radius: 4px;
+    padding: 2px 7px;
+    margin-bottom: 8px;
+    background: rgba(255,255,255,0.08);
+    color: var(--text-muted);
+}
+.hiw-tier-aug .hiw-tier-label   { background: rgba(0,212,255,0.15); color: var(--primary); }
+.hiw-tier-native .hiw-tier-label { background: rgba(160,80,255,0.2); color: #c084fc; }
+.hiw-tier-item strong {
+    display: block;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.92rem;
+    color: var(--text-main);
+    margin-bottom: 6px;
+}
+.hiw-tier-item p {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    line-height: 1.55;
+    margin: 0;
+}
+.hiw-tier-arrow {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+    font-size: 1.2rem;
+    flex-shrink: 0;
+}
+@media (max-width: 700px) {
+    .hiw-tier-row { flex-direction: column; }
+    .hiw-tier-arrow { transform: rotate(90deg); text-align: center; }
+}
+
+/* AI Innovation Scout agent item styling */
+.hiw-agent-scout {
+    border-top: 1px solid rgba(0, 212, 255, 0.2);
+    margin-top: 4px;
+    padding-top: 12px;
+    background: rgba(0, 212, 255, 0.03);
+    border-radius: 0 0 10px 10px;
+}
+.hiw-new-badge {
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: rgba(0, 212, 255, 0.2);
+    color: var(--primary);
+    border: 1px solid rgba(0, 212, 255, 0.4);
+    border-radius: 4px;
+    padding: 1px 6px;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+
+/* ─────────────────────────────────────────────
+   How It Works — Unscripted Debate section
+   ───────────────────────────────────────────── */
+.hiw-debate-explainer {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+    margin-bottom: 28px;
+}
+@media (max-width: 820px) {
+    .hiw-debate-explainer { grid-template-columns: 1fr; }
+}
+.hiw-debate-col h5 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.82rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--primary);
+    margin-bottom: 16px;
+}
+.hiw-debate-rules {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.hiw-debate-rules li {
+    font-size: 0.87rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    padding-left: 16px;
+    position: relative;
+}
+.hiw-debate-rules li::before {
+    content: '›';
+    position: absolute;
+    left: 0;
+    color: var(--primary);
+    font-weight: 700;
+}
+.hiw-debate-rules li strong { color: var(--text-main); }
+.hiw-arc-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.hiw-arc-item {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    padding: 14px;
+}
+.hiw-arc-num {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: rgba(0,212,255,0.15);
+    border: 1px solid rgba(0,212,255,0.35);
+    color: var(--primary);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.8rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.hiw-arc-item div {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    line-height: 1.55;
+}
+.hiw-arc-item strong { color: var(--text-main); }
+.hiw-debate-synthesis {
+    background: rgba(0, 212, 255, 0.05);
+    border: 1px solid rgba(0, 212, 255, 0.2);
+    border-radius: 12px;
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.hiw-debate-synthesis p {
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin: 0;
+}
+.hiw-debate-synthesis strong { color: var(--text-main); }
+
+/* ─────────────────────────────────────────────
+   How It Works — Three Paths preview in Synthesis
+   ───────────────────────────────────────────── */
+.hiw-verdict-highlight {
+    background: rgba(0, 212, 255, 0.15) !important;
+    border: 1px solid rgba(0, 212, 255, 0.4) !important;
+    color: var(--primary) !important;
+    font-weight: 700;
+}
+.hiw-paths-preview {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-top: 20px;
+}
+@media (max-width: 700px) {
+    .hiw-paths-preview { grid-template-columns: 1fr; }
+}
+.hiw-path-card {
+    border-radius: 12px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.hiw-path-a { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.12); }
+.hiw-path-b { background: rgba(0,212,255,0.07);  border: 1px solid rgba(0,212,255,0.28); }
+.hiw-path-c { background: rgba(160,80,255,0.08); border: 1px solid rgba(160,80,255,0.28); }
+.hiw-path-label {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.63rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+.hiw-path-b .hiw-path-label { color: var(--primary); }
+.hiw-path-c .hiw-path-label { color: #c084fc; }
+.hiw-path-card strong {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 1rem;
+    color: var(--text-main);
+}
+.hiw-path-card p {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin: 0;
+}
