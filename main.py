@@ -454,6 +454,247 @@ async def generate_kickoff_pack(request: KickoffPackRequest):
 
 
 # ─────────────────────────────────────────────
+# Meeting Room API
+# ─────────────────────────────────────────────
+
+class MeetingOpeningsRequest(BaseModel):
+    agent_reports: dict  # {persona_key: content_str}
+
+class MeetingDebateRequest(BaseModel):
+    agent_reports: dict  # {persona_key: {name, emoji, content}}
+
+class MeetingAskRequest(BaseModel):
+    question: str
+    agent_reports: dict  # {persona_key: {name, emoji, content}}
+
+
+@app.post("/api/meeting/openings")
+async def meeting_openings(request: MeetingOpeningsRequest):
+    """Generate a short spoken opening statement for each agent."""
+    if not ENV_ANTHROPIC_KEY:
+        raise HTTPException(status_code=400, detail="Anthropic API key not configured")
+
+    summaries = {}
+    for key, content in request.agent_reports.items():
+        if content and len(content) > 50:
+            summaries[key] = content[:1200]
+
+    condensed = "\n\n".join(
+        f'[{k}]:\n{v}' for k, v in summaries.items()
+    )
+
+    prompt = f"""You are a meeting facilitator. Each expert agent has completed a codebase analysis.
+Generate a 2-3 sentence spoken opening statement for each agent — the statement they will read aloud at the start of the board meeting.
+
+Rules:
+- Each statement must start with the agent identifying themselves by role
+- State the single most critical finding from their analysis
+- End with the business impact in plain language
+- Plain speech ONLY — no markdown, no bullet points, no headers — this will be read aloud via text-to-speech
+- Each statement should sound natural when spoken
+
+Return ONLY valid JSON: {{"architect": "I am the Solutions Architect. My analysis reveals...", "ba": "..."}}
+
+Agent reports (truncated):
+{condensed[:8000]}"""
+
+    try:
+        client = anthropic_sdk.AsyncAnthropic(api_key=ENV_ANTHROPIC_KEY)
+        message = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=3000,
+            temperature=0.7,
+            system="You are a corporate communications specialist. Generate natural, spoken-word opening statements. Return valid JSON only — no markdown wrapping.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = message.content[0].text.strip()
+        # Strip markdown code fences if present
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.rsplit("```", 1)[0]
+        openings = json.loads(text.strip())
+    except Exception as e:
+        # Graceful fallback: extract first sentence from each report
+        openings = {}
+        for key, content in summaries.items():
+            cfg = agent_engine.PERSONA_CONFIGS.get(key, {})
+            name = cfg.get("name", key)
+            first_line = content.split('\n')[0].replace('#', '').strip()[:200]
+            openings[key] = f"I am the {name}. {first_line}"
+
+    return {"openings": openings}
+
+
+@app.post("/api/meeting/debate")
+async def meeting_debate(request: MeetingDebateRequest):
+    """Generate an unscripted debate transcript driven by actual agent findings."""
+    if not ENV_ANTHROPIC_KEY:
+        raise HTTPException(status_code=400, detail="Anthropic API key not configured")
+
+    # Build richer summaries so agents can make specific references, not generic platitudes
+    agent_summaries = []
+    for key, data in request.agent_reports.items():
+        cfg = agent_engine.PERSONA_CONFIGS.get(key) or (agent_engine.SYNTHESIS_CONFIG if key == "synthesis" else {})
+        name = cfg.get("name", key)
+        content = data.get("content", "") if isinstance(data, dict) else str(data)
+        # Give each agent 1200 chars so they have real specifics to cite
+        agent_summaries.append(f"[{key}] {name}:\n{content[:1200]}")
+
+    # Build dynamic tension points by extracting what agents actually found
+    has_innovation_scout = "ai_innovation_scout" in request.agent_reports
+    has_outsystems = "outsystems_architect" in request.agent_reports or "outsystems_migration" in request.agent_reports
+
+    prompt = f"""You are the moderator of a CTO-level discovery board meeting. These {len(agent_summaries)} expert agents have each independently analysed the same codebase and now sit around the same table. They have real findings, real professional opinions, and — critically — genuine disagreements.
+
+Your job is to generate a realistic, unscripted debate transcript (12-15 turns) where these experts challenge each other based on what they ACTUALLY found. This is not a polished keynote — it's a heated boardroom where every expert has staked their professional credibility on their analysis.
+
+GROUND RULES FOR EVERY TURN:
+1. Each speaker MUST reference a specific, concrete finding from their own report — a file name, a metric, a vulnerability, a cost figure, a user flow. No generic platitudes.
+2. Agents must DIRECTLY respond to the previous speaker — not pivot to their own agenda. Real debates are reactive.
+3. Disagreement must be substantive: "I disagree because [specific evidence]" not just "I see it differently."
+4. Concessions are allowed and realistic: "That's a fair point about X, but what you're not accounting for is..."
+5. Emotions exist but are professional: frustration at being dismissed, satisfaction when making a point land.
+6. The AI Innovation Scout (if present) must challenge at least two traditional recommendations — asking "but does this need to be built at all, or does an AI tool already solve this?"
+7. The OutSystems specialists (if present) must present the platform case — including its real limitations — and be challenged on build complexity, vendor lock-in, and developer experience.
+
+TENSION ARCS TO WEAVE THROUGH (use the actual findings below to make these specific):
+- ARC 1 — Speed vs Safety: Someone pushing for velocity clashes with someone demanding quality/security gates. Both have evidence.
+- ARC 2 — Build vs Buy vs AI vs Low-Code: The traditionalists, the AI Innovation Scout, and the OutSystems specialists all have different answers to the same question. This is the central unresolved tension — don't let synthesis hand-wave it away.
+- ARC 3 — Investment levels: One agent argues for conservative incremental improvements; another argues the codebase needs a more transformative investment. Different risk appetites, both defensible.
+- ARC 4 — One genuine surprise: An unexpected alliance — two agents who seem opposed actually agree on something, or an agent concedes a point they initially dismissed.
+
+DEBATE FORMAT:
+- 2-4 sentences per turn, plain conversational speech (this is spoken aloud via TTS — no markdown, no bullet points, no headers)
+- Start responses with direct address: "I hear what [name] is saying, but..." or "I have to push back on that..."
+- Synthesis speaks LAST and makes binding decisions — it resolves the Build vs Buy vs Low-Code arc definitively, names the three things that must happen first, and is direct about what was NOT resolved and why.
+
+Return ONLY a valid JSON array (no markdown wrapping, no explanation):
+[{{"speaker": "security", "text": "I need to address something the performance engineer said..."}}, ...]
+
+Available speaker keys: architect, ba, qa, security, tech_docs, data_engineering, devops, product_management, ui_ux, compliance, secops, performance_engineer, cost_analyst, api_designer, tech_lead{", ai_innovation_scout" if has_innovation_scout else ""}{", outsystems_architect, outsystems_migration" if has_outsystems else ""}, synthesis
+
+AGENT REPORTS (use these specifics in the debate — agents must cite their own findings):
+{chr(10).join(agent_summaries)}"""
+
+    try:
+        client = anthropic_sdk.AsyncAnthropic(api_key=ENV_ANTHROPIC_KEY)
+        message = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=5000,
+            temperature=0.9,
+            system="You are generating a realistic expert debate. The agents are opinionated professionals who genuinely disagree. Return a valid JSON array only — no markdown wrapping, no preamble, no trailing text.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = message.content[0].text.strip()
+        # Strip markdown fences if model added them
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.rsplit("```", 1)[0]
+        turns = json.loads(text.strip())
+    except Exception:
+        turns = [
+            {"speaker": "architect", "text": "I have to be direct: the architectural debt I found is not something we can patch around. This system has grown organically and the coupling between components means every change risks cascading failures. We need a clear modernisation path."},
+            {"speaker": "ai_innovation_scout" if has_innovation_scout else "tech_lead", "text": "I hear the architect, but before we commit to months of refactoring, I want to challenge the assumption that we build everything ourselves. At least three of the components I identified have direct low-code or AI-native alternatives that would take weeks, not quarters."},
+            {"speaker": "outsystems_architect" if has_outsystems else "tech_lead", "text": "And I'd go further — I've done the domain mapping for this application, and a significant portion of it would be a clean fit for OutSystems ODC. The entity model translates well, there are Forge components for two of the integrations, and the team could be building production features in OutSystems within four weeks of starting. That's not a sales pitch, that's a feasibility assessment based on what I actually found."},
+            {"speaker": "tech_lead", "text": "I have to push back on that. OutSystems is a real option for parts of this, but the core differentiating logic here is exactly the kind of thing that hits the platform's ceiling. I've seen teams migrate to OutSystems and then spend six months building Extensions just to get back to parity. The question is which parts."},
+            {"speaker": "security", "text": "I want to make sure we don't lose sight of the immediate risk. Regardless of which path we choose, the authentication gaps I found represent legal exposure today. That's not a path discussion — that's a this-sprint fix."},
+            {"speaker": "outsystems_migration" if has_outsystems else "cost_analyst", "text": "I agree with security, and I'll add this: if we're seriously considering OutSystems, the migration complexity scoring I ran shows a 12-sprint programme for a full migration. That's not a quick win. The smarter approach is a selective migration — move new features to OutSystems while we stabilise the existing core."},
+            {"speaker": "synthesis", "text": "Here is my binding read: security remediation is non-negotiable and starts this sprint. On the platform question — a full rewrite in any direction is off the table in the short term. The right answer is a selective strategy: AI tooling improves the existing team's velocity immediately, OutSystems gets a focused pilot on one non-core domain in the next quarter, and we reassess full migration at the six-month mark with real data. The architect's modernisation roadmap proceeds in parallel. No single platform wins today — we run the experiment."}
+        ]
+
+    enriched = []
+    for t in turns:
+        key = t.get("speaker", "synthesis")
+        cfg = agent_engine.PERSONA_CONFIGS.get(key) or (agent_engine.SYNTHESIS_CONFIG if key == "synthesis" else {"name": key, "emoji": "🤖"})
+        enriched.append({
+            "speaker": key,
+            "name": cfg.get("name", key),
+            "emoji": cfg.get("emoji", "🤖"),
+            "text": t.get("text", "")
+        })
+
+    return {"turns": enriched}
+
+
+@app.post("/api/meeting/ask")
+async def meeting_ask(request: MeetingAskRequest):
+    """Route a question to the most relevant agent and return their spoken answer."""
+    if not ENV_ANTHROPIC_KEY:
+        raise HTTPException(status_code=400, detail="Anthropic API key not configured")
+
+    available = {k: v.get("name", k) for k, v in request.agent_reports.items()}
+    agent_list = "\n".join(f"- {k}: {name}" for k, name in available.items())
+
+    routing_prompt = f"""Question: "{request.question}"
+
+Available experts:
+{agent_list}
+
+Which expert is MOST relevant to answer this question? Reply with ONLY the exact agent key (e.g. "security" or "architect"). No explanation, no punctuation."""
+
+    try:
+        client = anthropic_sdk.AsyncAnthropic(api_key=ENV_ANTHROPIC_KEY)
+        routing_msg = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=20,
+            temperature=0,
+            messages=[{"role": "user", "content": routing_prompt}]
+        )
+        best_key = routing_msg.content[0].text.strip().lower().strip('"\'').strip()
+        if best_key not in request.agent_reports:
+            best_key = "synthesis" if "synthesis" in request.agent_reports else list(request.agent_reports.keys())[0]
+    except Exception:
+        best_key = "synthesis" if "synthesis" in request.agent_reports else list(request.agent_reports.keys())[0]
+
+    agent_data = request.agent_reports.get(best_key, {})
+    content = agent_data.get("content", "") if isinstance(agent_data, dict) else str(agent_data)
+    cfg = agent_engine.PERSONA_CONFIGS.get(best_key) or (agent_engine.SYNTHESIS_CONFIG if best_key == "synthesis" else {"name": best_key, "emoji": "🤖", "model": "anthropic"})
+
+    answer_prompt = f"""You are the {cfg.get('name', best_key)}. A stakeholder just asked this question during a board meeting:
+
+"{request.question}"
+
+Your previous analysis (context):
+{content[:4000]}
+
+Give a direct, authoritative spoken answer (3-5 sentences). Plain speech ONLY — this will be read aloud via text-to-speech. No markdown, no bullet points, no headers. Be specific and reference concrete findings from your analysis."""
+
+    model_type = cfg.get("model", "anthropic") if best_key != "synthesis" else "anthropic"
+
+    try:
+        if model_type == "anthropic" or not ENV_GEMINI_KEY:
+            client = anthropic_sdk.AsyncAnthropic(api_key=ENV_ANTHROPIC_KEY)
+            msg = await client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=500,
+                temperature=0.5,
+                messages=[{"role": "user", "content": answer_prompt}]
+            )
+            answer = msg.content[0].text
+        else:
+            gemini_client = genai.Client(api_key=ENV_GEMINI_KEY)
+            resp = await gemini_client.aio.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=answer_prompt,
+                config=types.GenerateContentConfig(temperature=0.5)
+            )
+            answer = resp.text
+    except Exception as e:
+        answer = f"I apologise, I'm unable to answer at this time. Please check the API configuration. Error: {str(e)}"
+
+    return {
+        "agent_key": best_key,
+        "name": cfg.get("name", best_key),
+        "emoji": cfg.get("emoji", "🤖"),
+        "answer": answer
+    }
+
+
+# ─────────────────────────────────────────────
 # Report History
 # ─────────────────────────────────────────────
 

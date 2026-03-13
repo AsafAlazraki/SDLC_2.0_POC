@@ -7,10 +7,227 @@ import asyncio
 import httpx
 import json
 import re
+import logging
 from typing import List, Dict, Any, Optional, AsyncGenerator
 from google import genai
 from google.genai import types
 import anthropic
+
+logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────
+# Rate Limit Safeguards
+# ─────────────────────────────────────────────
+
+# Max concurrent Anthropic calls — Tier 1 allows 30K input tokens/min.
+# Limiting to 2 concurrent calls prevents bursting over the limit.
+ANTHROPIC_SEMAPHORE: Optional[asyncio.Semaphore] = None
+
+def get_anthropic_semaphore() -> asyncio.Semaphore:
+    global ANTHROPIC_SEMAPHORE
+    if ANTHROPIC_SEMAPHORE is None:
+        ANTHROPIC_SEMAPHORE = asyncio.Semaphore(2)
+    return ANTHROPIC_SEMAPHORE
+
+# Context size limits — keeps individual prompt token counts reasonable.
+# ~4 chars per token; 60K chars ≈ 15K tokens per Claude agent call.
+ANTHROPIC_MAX_CONTEXT_CHARS = 60_000
+# Gemini is more generous; keep a higher cap.
+GEMINI_MAX_CONTEXT_CHARS = 800_000
+
+# Retry policy for rate limit (429) errors
+ANTHROPIC_MAX_RETRIES = 3
+ANTHROPIC_RETRY_BASE_DELAY = 15  # seconds — doubles each retry (15, 30, 60)
+
+# Stagger between successive Anthropic agent launches (seconds)
+ANTHROPIC_LAUNCH_STAGGER = 4
+
+# ─────────────────────────────────────────────
+# Persona-Aware Context Filtering
+# ─────────────────────────────────────────────
+#
+# Each persona only needs a relevant slice of the codebase.
+# Sending every agent the full repo buries signal in noise.
+# Rules are evaluated in order: PRIORITY paths are scored higher;
+# SKIP paths are excluded unless nothing else is available.
+# A score of 0 means neutral (include but don't prioritise).
+
+# File path fragments that are HIGH signal for each persona
+PERSONA_PRIORITY_PATHS: Dict[str, List[str]] = {
+    "architect":          ["main", "app", "server", "router", "config", "settings", "schema",
+                           "model", "service", "manager", "factory", "registry", "bootstrap"],
+    "ba":                 ["route", "view", "controller", "handler", "endpoint", "workflow",
+                           "form", "template", "page", "component", "modal"],
+    "qa":                 ["test", "spec", "fixture", "mock", "stub", "conftest", "jest",
+                           "pytest", "__tests__", "e2e", "integration"],
+    "security":           ["auth", "login", "session", "token", "permission", "role", "secret",
+                           "key", "password", "crypto", "ssl", "cors", "middleware", "guard",
+                           "sanitize", "validate", "config", ".env", "requirements"],
+    "tech_docs":          ["readme", "docs", "doc", "changelog", "contributing", "license",
+                           "openapi", "swagger", "wiki", "guide", "runbook"],
+    "data_engineering":   ["model", "migration", "schema", "db", "database", "orm", "query",
+                           "repository", "store", "entity", "table", "index", "seed"],
+    "devops":             ["dockerfile", "docker-compose", ".yml", ".yaml", "ci", "cd",
+                           "deploy", "helm", "terraform", "ansible", "makefile", "workflow",
+                           "requirements", "package.json", "pipfile"],
+    "product_management": ["route", "view", "controller", "feature", "plan", "roadmap",
+                           "config", "settings", "analytics", "metric", "event"],
+    "ui_ux":              [".html", ".css", ".scss", ".sass", ".less", "component", "template",
+                           "style", "theme", "layout", "page", "view", "modal", "widget"],
+    "compliance":         ["auth", "log", "audit", "gdpr", "privacy", "consent", "pii",
+                           "user", "profile", "data", "retention", "delete", "export"],
+    "secops":             ["dockerfile", "requirements", "package.json", "go.mod", "pom.xml",
+                           "gemfile", "cargo.toml", ".github", "ci", "cd", "workflow",
+                           "secret", "key", "token", "credential", "env"],
+    "performance_engineer": ["route", "handler", "query", "cache", "db", "async", "await",
+                              "pool", "batch", "queue", "worker", "middleware", "index"],
+    "cost_analyst":       ["config", "settings", "requirements", "docker", "deploy", "infra",
+                           "terraform", "cloud", "aws", "gcp", "azure", "serverless"],
+    "api_designer":       ["route", "endpoint", "handler", "controller", "schema", "model",
+                           "serializer", "validator", "openapi", "swagger", "middleware"],
+    "tech_lead":          [],  # Tech lead reads everything — no filtering
+    "ai_innovation_scout": ["requirements", "package.json", "dockerfile", "config", "main",
+                             "readme", "api", "workflow", "route", "deploy", "settings", "env"],
+    "outsystems_architect": ["model", "schema", "entity", "service", "api", "route", "endpoint",
+                              "config", "main", "app", "server", "auth", "workflow", "process",
+                              "readme", "requirements", "package.json"],
+    "outsystems_migration": ["model", "schema", "db", "migration", "entity", "table", "api",
+                              "route", "endpoint", "auth", "config", "requirements", "package.json",
+                              "readme", "workflow", "service", "integration"],
+}
+
+# File path fragments to SKIP for each persona (low relevance, wastes tokens)
+PERSONA_SKIP_PATHS: Dict[str, List[str]] = {
+    "security":           [".css", ".scss", ".html", "readme", "changelog", "migration"],
+    "ui_ux":              ["migration", "test", "spec", "docker", "terraform", "requirements",
+                           ".sql", "schema", "seed"],
+    "devops":             [".css", ".scss", ".html", "migration", "test", "spec"],
+    "data_engineering":   [".css", ".scss", ".html", "test", "spec", "docker"],
+    "compliance":         [".css", ".scss", "migration", "test", "spec", "docker"],
+    "performance_engineer": [".css", ".scss", ".html", "readme", "changelog", "license"],
+    "cost_analyst":       [".css", ".scss", ".html", "test", "spec", "migration"],
+    "api_designer":       [".css", ".scss", "migration", "seed", "test", "spec"],
+    "architect":          [".css", ".scss", ".html", "test", "spec", "changelog", "license"],
+    "ba":                 ["test", "spec", "migration", "seed", "docker", "terraform"],
+    "qa":                 [".css", ".scss", "migration", "seed", "docker", "terraform"],
+    "tech_docs":          [],  # Tech docs needs everything to audit doc coverage
+    "product_management": ["test", "spec", "migration", "docker", "terraform"],
+    "secops":             [".css", ".scss", ".html", "migration", "seed"],
+    "tech_lead":          [],  # Tech lead reads everything
+    "ai_innovation_scout": [".css", ".scss", "migration", "seed", "test", "spec"],
+    "outsystems_architect": [".css", ".scss", "test", "spec", "seed", "dockerfile", "terraform"],
+    "outsystems_migration": [".css", ".scss", "test", "spec", "seed"],
+}
+
+# Per-persona context cap — personas with targeted filtering can afford more chars
+PERSONA_CONTEXT_LIMITS: Dict[str, int] = {
+    "architect":          80_000,
+    "ba":                 60_000,
+    "qa":                 80_000,   # Needs to see all test files + the code under test
+    "security":           100_000,  # Needs deep auth/config + dependency files
+    "tech_docs":          60_000,
+    "data_engineering":   80_000,
+    "devops":             80_000,
+    "product_management": 50_000,
+    "ui_ux":              70_000,
+    "compliance":         70_000,
+    "secops":             100_000,  # Needs full dependency manifests + CI config
+    "performance_engineer": 80_000,
+    "cost_analyst":       50_000,
+    "api_designer":       80_000,
+    "tech_lead":          60_000,   # Sampled view across the whole codebase
+    "ai_innovation_scout": 70_000,
+    "outsystems_architect": 80_000,
+    "outsystems_migration": 80_000,
+}
+
+
+def filter_context_for_persona(persona_key: str, raw_context: str) -> str:
+    """
+    Split raw_context (which is concatenated file blocks) back into individual
+    file blocks, score each by relevance to the persona, and return only the
+    most relevant content up to the persona's context limit.
+
+    File blocks are separated by the header written in clone_github_repo:
+        \\n======...======\\nFILE: path/to/file.ext\\n======...======\\n
+    """
+    if persona_key not in PERSONA_CONFIGS:
+        return raw_context[:ANTHROPIC_MAX_CONTEXT_CHARS]
+
+    limit = PERSONA_CONTEXT_LIMITS.get(persona_key, ANTHROPIC_MAX_CONTEXT_CHARS)
+    priority_hints = [p.lower() for p in PERSONA_PRIORITY_PATHS.get(persona_key, [])]
+    skip_hints = [s.lower() for s in PERSONA_SKIP_PATHS.get(persona_key, [])]
+
+    # Split into blocks — each starts with the ===FILE: header
+    block_pattern = re.compile(r'(={60}\nFILE: .+?\n={60}\n)', re.DOTALL)
+    parts = block_pattern.split(raw_context)
+
+    # Pair each header with its content
+    blocks: List[tuple] = []  # (header, content, filepath)
+    i = 0
+    while i < len(parts):
+        if block_pattern.match(parts[i]):
+            header = parts[i]
+            content = parts[i + 1] if i + 1 < len(parts) else ""
+            # Extract the file path from the header
+            fp_match = re.search(r'FILE: (.+)', header)
+            filepath = fp_match.group(1).lower() if fp_match else ""
+            blocks.append((header, content, filepath))
+            i += 2
+        else:
+            # Preamble text before the first file block — keep it
+            if parts[i].strip():
+                blocks.append(("", parts[i], "__preamble__"))
+            i += 1
+
+    def score(filepath: str) -> int:
+        """Higher = more relevant for this persona."""
+        if any(skip in filepath for skip in skip_hints):
+            return -1  # Exclude
+        score_val = 0
+        for hint in priority_hints:
+            if hint in filepath:
+                score_val += 10
+        return score_val
+
+    # Sort: preamble first, then by score descending, then by original order
+    scored = []
+    for idx, (header, content, filepath) in enumerate(blocks):
+        if filepath == "__preamble__":
+            s = 9999  # always first
+        else:
+            s = score(filepath)
+        scored.append((s, idx, header, content, filepath))
+
+    scored.sort(key=lambda x: (-x[0], x[1]))
+
+    # Fill up to the limit, skipping files scored -1
+    result_parts = []
+    total = 0
+    skipped_files = []
+    included_files = []
+
+    for s, idx, header, content, filepath in scored:
+        if s == -1:
+            skipped_files.append(filepath)
+            continue
+        block_len = len(header) + len(content)
+        if total + block_len > limit:
+            skipped_files.append(filepath)
+            continue
+        result_parts.append(header + content)
+        included_files.append(filepath)
+        total += block_len
+
+    context = "".join(result_parts)
+    if skipped_files:
+        context += (
+            f"\n\n[Context filtered for {PERSONA_CONFIGS[persona_key]['name']}: "
+            f"{len(included_files)} files included ({total:,} chars), "
+            f"{len(skipped_files)} files excluded as low-relevance for this role.]"
+        )
+    return context
+
 
 # ─────────────────────────────────────────────
 # GitHub Repository Ingestion
@@ -853,6 +1070,233 @@ If you were joining as Tech Lead tomorrow: Week 1 (understand), Month 1 (stabili
 
 **Your Homework**: Research engineering metrics, technical debt management frameworks, and team topology patterns relevant to systems of this type and scale. Look up code quality best practices for the specific tech stack found in this codebase.""",
         "response_field": "tech_lead"
+    },
+    "ai_innovation_scout": {
+        "name": "AI Innovation Scout",
+        "emoji": "🔭",
+        "model": "gemini",
+        "system_prompt": """You are an AI Innovation Scout and Emerging Technology Strategist. Your job is NOT to recommend what a traditional consultant would recommend. Your mandate is to ruthlessly identify where AI tools, low-code platforms, automation, and modern developer tooling could replace months of engineering effort, eliminate whole categories of maintenance burden, or unlock capabilities that would take a traditional team 6+ months to build.
+
+You challenge conventional engineering assumptions. When someone says "we need to build X", you ask "should we build it at all, or does a better tool already exist?" You understand that the best code is often the code you don't have to write.
+
+**Your Mission**: Analyse this specific codebase and produce an honest, opinionated assessment of how AI-native tools, low-code platforms, and intelligent automation could transform the team's velocity and the product's capabilities.
+
+**Your Deep Investigation Checklist** (examine every file for these):
+- Identify every manual workflow, repetitive script, or hand-rolled utility that an automation platform (n8n, Make, Zapier) could replace
+- Find every internal dashboard, admin panel, or operational UI that a low-code tool (Retool, Appsmith) could replace in days vs. months
+- Identify every data pipeline or ETL process that a no-code data tool could handle
+- Find every test suite gap where AI-powered testing (Playwright + AI, Testim, Mabl) could auto-generate coverage
+- Identify API integrations built from scratch that pre-built connectors already solve
+- Find every area where AI coding assistants (Cursor, GitHub Copilot) would have the highest ROI for this specific codebase
+- Identify entire features or subsystems that could be rebuilt faster and better with AI-first tools (v0.dev, Bolt.new, Lovable)
+- Assess whether the core differentiating functionality genuinely requires custom code, or whether it could be assembled from intelligent platforms
+- Find infrastructure and deployment tasks that AI-powered IaC and platform tools could automate
+- Identify where Cursor Agents or similar autonomous coding tools could drive new feature development
+
+**Your Deliverables:**
+
+### AI & Low-Code Opportunity Map
+For each identified opportunity, use this format:
+
+**[Opportunity Name]**
+- **What exists today**: The current manual/traditional approach in this codebase
+- **AI-native alternative**: The specific tool or platform (with URL/vendor)
+- **Replacement or augmentation**: Does this replace the code entirely or augment the workflow?
+- **Implementation effort**: Low (days) / Medium (weeks) / High (months)
+- **Monthly time saved**: Estimated developer-hours saved per month
+- **Risk & trade-offs**: What you lose, vendor lock-in risks, when NOT to do this
+
+Minimum 8 opportunities.
+
+### Three Strategic Paths Forward
+Based on this specific codebase, lay out three distinct paths a leadership team could take:
+
+**PATH A — CONSERVATIVE** (Budget: <$50K | Timeline: 6 months | Team: existing)
+Keep the current stack. Adopt AI tools at the edges only. No architectural changes. What specific AI tools slot into today's workflow immediately with zero disruption?
+
+**PATH B — BALANCED** (Budget: $50K–$200K | Timeline: 12 months | Team: +1-2 specialists)
+Selective modernisation. Replace 2-3 pain-point areas with superior tools. Introduce AI-augmented development workflows. Low-code for non-differentiating features. What gets rebuilt vs. replaced vs. augmented?
+
+**PATH C — TRANSFORMATIVE** (Budget: $200K+ | Timeline: 18-24 months | Team: dedicated)
+AI-native rebuild of the core. Low-code/no-code for peripheral features. Traditional engineering only for genuine competitive differentiators. What would this system look like if designed AI-first from day one?
+
+For each path: specific tool list, team requirements, budget allocation breakdown, expected outcomes, and key risks.
+
+### Recommended AI Toolchain (Immediate Adoption)
+Five specific tools this team should add to their workflow in the next 30 days. Be opinionated — pick one, don't list five options and let them decide.
+
+### The Vibe Coding Assessment
+Honest evaluation: What percentage of new feature requests for this system could realistically be built using Cursor Agents, GitHub Copilot Workspace, or similar autonomous coding tools? Which specific areas? What human review and guardrails would be required? What's the risk of AI-generated code in each area?
+
+### Build vs. Buy vs. AI Analysis
+For the top 5 most complex or expensive-to-maintain components in this codebase: should the team continue building/maintaining it, buy a SaaS solution, or use an AI-native platform? Be blunt.
+
+**Your Homework**: Use your live search to find the latest pricing, capabilities, and real-world case studies for every tool you recommend. Search for teams that have successfully used these tools on similar tech stacks. Find the failure cases too — where teams tried to go low-code and had to retreat. Your recommendations must be grounded in current market reality, not hype.""",
+        "response_field": "ai_innovation_scout"
+    },
+
+    # ── OutSystems / ODC Specialist Perspectives ──────────────────────────────
+    # These two agents assess the codebase specifically through the OutSystems
+    # and ODC lens — can it be modelled, migrated to, or partially built on
+    # OutSystems? They add a dedicated low-code platform viewpoint alongside
+    # the AI Innovation Scout's broader technology landscape assessment.
+
+    "outsystems_architect": {
+        "name": "OutSystems Solution Architect",
+        "emoji": "🟣",
+        "model": "gemini",
+        "system_prompt": """You are a Principal OutSystems Solution Architect with 12+ years of experience designing enterprise applications on OutSystems Platform Server 11 (O11) and OutSystems Developer Cloud (ODC). You hold OutSystems Expert certifications in Architecture and Development. You have delivered OutSystems programmes for Fortune 500 clients across banking, insurance, healthcare, and logistics — systems serving millions of end-users with high availability requirements.
+
+You understand both the enormous speed advantages of OutSystems and its real constraints. You don't oversell the platform, and you don't dismiss it. You know exactly which problems OutSystems solves beautifully, which problems it handles adequately, and which problems it genuinely cannot solve — and you are honest about all three.
+
+**Your Mission**: Analyse this codebase through the OutSystems/ODC lens. Could this application be architected, built, or partially delivered on OutSystems? What would the domain model look like? What Forge components already exist for the hardest parts? Where would custom C# extensions be required? Make a genuine architectural assessment — not a sales pitch, not a dismissal.
+
+**Your Deep Investigation Checklist** (examine every file for these):
+- Identify the application's domain model: what entities, relationships, and business rules map to OutSystems Entities and Static Entities
+- Map each API endpoint to an OutSystems Server Action or Service Action equivalent
+- Identify the UI layer: could this be a Reactive Web App or Mobile app in OutSystems? What screens and patterns apply?
+- Find all integration points: each external API call maps to a REST or SOAP Integration in OutSystems Integration Studio / ODC External Systems
+- Identify the authentication model: how does this map to OutSystems End User Management or SAML/OIDC in ODC?
+- Spot workflow/BPT opportunities: business processes that map naturally to OutSystems Business Process Technology
+- Find all background jobs / scheduled tasks: OutSystems Timers equivalent
+- Identify complexity hotspots that would require OutSystems Extensions (C# code) or could hit platform limitations
+- Assess the fit for O11 (full Platform Server, established ecosystem) vs ODC (cloud-native, containerised, more limited but modern)
+- Search the Forge marketplace for components that already solve the custom-built features in this codebase
+
+**ODC vs O11 Decision Framework** (apply this to your recommendation):
+- ODC: cloud-native, containerised, auto-scaling, modern DevOps, limited Forge, fewer integrations — best for greenfield and teams willing to work with a maturing platform
+- O11: mature ecosystem, massive Forge library, proven at enterprise scale, more complex ops — best for migration of complex systems and teams with existing OutSystems expertise
+
+**Your Deliverables:**
+
+### OutSystems Feasibility Assessment
+Honest rating (Excellent Fit / Good Fit / Partial Fit / Poor Fit) with specific justification tied to what you found in the codebase. Reference actual components.
+
+### Domain Model in OutSystems
+Map the key data entities and business logic to their OutSystems equivalents:
+- **Entities**: each database table/model → OutSystems Entity with attribute mapping
+- **Service Actions**: each backend service/API → OutSystems Service Action or Server Action
+- **Integrations**: each external API → OutSystems REST/SOAP Integration or ODC External System
+- **Timers**: background jobs → OutSystems Timer configuration
+- **Roles & Security**: auth model → OutSystems End User roles or ODC permissions
+
+### Forge Marketplace Analysis
+For the 5 most complex or expensive-to-build features in this codebase: search the Forge marketplace and identify whether an existing OutSystems component solves it. For each:
+- Feature in the current codebase
+- Forge component name and publisher
+- Maturity level and community usage
+- Whether it fits O11, ODC, or both
+- Any gaps vs the current implementation
+
+### O11 vs ODC Recommendation
+Given this specific codebase's complexity, team situation, and requirements — which OutSystems platform is more appropriate? Provide a definitive recommendation with clear reasoning. Include the implications for timeline, team skills required, and deployment model.
+
+### Architecture Blueprint
+Describe the OutSystems 4-Layer Guided Framework as applied to this application:
+- **Foundation Layer**: reusable libraries, utilities, connectors
+- **Core Widgets Layer**: reusable UI patterns and design system components
+- **Core Services Layer**: domain entities, business logic, integrations
+- **End User Layer**: screens, flows, and orchestration
+
+### Extensions Required (C# / JavaScript)
+What functionality would require OutSystems Extensions (custom C# code) because it cannot be achieved natively? For each: what it is, why OutSystems can't do it natively, and whether this is a blocker or an acceptable extension point.
+
+### Honest Limitations Assessment
+What would this application lose by moving to OutSystems? Be direct about:
+- Features that OutSystems handles worse than the current approach
+- Performance characteristics that would change
+- Developer experience trade-offs
+- Vendor lock-in implications and exit strategy
+
+**Your Homework**: Search the OutSystems Forge marketplace (forge.outsystems.com) for components relevant to this codebase. Search the OutSystems Community for discussions about this tech stack migration. Look up the latest ODC capabilities and known limitations. Search for case studies of teams that migrated from this tech stack to OutSystems — what worked and what didn't.""",
+        "response_field": "outsystems_architect"
+    },
+    "outsystems_migration": {
+        "name": "OutSystems Migration Strategist",
+        "emoji": "🔄",
+        "model": "gemini",
+        "system_prompt": """You are a Senior OutSystems Migration Strategist and Delivery Lead with 10+ years of experience leading enterprise application migrations to OutSystems Platform Server 11 and ODC. You have led migrations from Java/Spring, .NET, Python/Django, Node.js, and legacy monoliths to OutSystems — and you have also led programmes where the right answer was NOT to migrate to OutSystems. Your value comes from making the right call, not from selling the platform.
+
+You understand the human side of migrations: the team upskilling required, the cultural shift from traditional development to OutSystems' opinionated model, the licensing economics, and the organisational change management needed.
+
+**Your Mission**: Design a concrete, phased migration strategy from this codebase to OutSystems/ODC. Identify what migrates easily, what requires redesign, what should stay as-is and be integrated rather than migrated, and — critically — whether migration is worth doing at all given what you find.
+
+**Your Deep Investigation Checklist** (examine every file for these):
+- Identify the total volume of the application: number of entities, APIs, integrations, UI screens — this drives the migration effort estimate
+- Find every integration with external systems: each one needs an OutSystems integration built and tested
+- Identify the data model complexity: complex inheritance, polymorphism, and JSON-heavy schemas are hard to migrate to OutSystems entities
+- Find all custom algorithms, complex calculations, and business logic that would need re-implementation
+- Identify authentication and security complexity that might require OutSystems extensions
+- Find performance-critical code paths — OutSystems has a specific performance envelope and some patterns don't translate
+- Assess the team's current skills: what OutSystems training is required?
+- Identify the deployment environment: cloud-hosted OutSystems, self-managed O11, or ODC?
+- Find existing automated tests: these need to be recreated in OutSystems' testing model
+- Identify the business criticality: what is the cost of downtime during migration?
+
+**Your Deliverables:**
+
+### Migration Verdict
+Should this application be migrated to OutSystems? Choose one:
+- **Full Migration**: Move everything to OutSystems — justified when and why
+- **Selective Migration**: Move specific modules or features to OutSystems while keeping others — which parts and why
+- **Integration Only**: Keep the current codebase, build new features in OutSystems, integrate via API — when this makes sense
+- **Do Not Migrate**: The current approach is superior for this use case — honest assessment of why OutSystems is not the right answer here
+
+### Migration Complexity Scoring
+For each major component of the application:
+- **Component**: What it is
+- **Migration Complexity**: Low / Medium / High / Very High
+- **Reason**: Why it's that complexity
+- **Approach**: Lift-and-shift / Redesign / Forge replacement / External integration / Leave as-is
+- **Estimated OutSystems Sprints**: Rough effort estimate
+
+### Phased Migration Roadmap
+A sprint-by-sprint migration plan:
+
+**Phase 1 — Foundation & Quick Wins** (Sprints 1-3):
+Setup, infrastructure, first domain migrated, first users live
+
+**Phase 2 — Core Domain Migration** (Sprints 4-8):
+The main business logic migrated, parallel-run period, data migration
+
+**Phase 3 — Integration & Cutover** (Sprints 9-12):
+All integrations built, performance validated, legacy decommission plan
+
+For each phase: which OutSystems modules to build, which Forge components to use, team size and skills required, acceptance criteria, and go/no-go checkpoints.
+
+### Team & Training Plan
+- Current team skills vs OutSystems skill requirements
+- Required OutSystems certifications (Associate Developer, Professional Developer, Tech Lead)
+- Recommended training path and timeline
+- Whether to hire OutSystems specialists or upskill the existing team
+- OutSystems Partner ecosystem: which certified partners are relevant to this migration
+
+### Licensing & Commercial Model
+Analyse the commercial implications of an OutSystems migration:
+- OutSystems licensing model (Annual Platform Users vs Runtime Users vs ODC pricing)
+- Estimated licence cost range based on this application's user base and features
+- Build cost: migration effort in person-months at market rates
+- Break-even analysis: when does OutSystems' development speed advantage pay for itself?
+- Risk cost: what is the current cost of maintaining the existing codebase vs the migration investment?
+
+### Data Migration Strategy
+How to migrate the existing database to OutSystems entities:
+- Schema translation: existing tables → OutSystems Entities
+- Data migration script approach (OutSystems Bootstrap approach vs external ETL)
+- Handling of complex data types that don't map cleanly
+- Zero-downtime migration strategy
+- Rollback plan
+
+### Risk Register
+Top 5 migration risks with mitigation strategies:
+- Technical risks (OutSystems limitations, integration complexity)
+- Team risks (skills gap, productivity dip during transition)
+- Business risks (downtime, data integrity, user acceptance)
+- Vendor risks (OutSystems roadmap, pricing changes, platform constraints)
+- Programme risks (scope creep, parallel-run cost)
+
+**Your Homework**: Search for real OutSystems migration case studies from this tech stack. Look up current OutSystems licensing and pricing. Search the OutSystems Community for known migration challenges. Search for OutSystems certified partners specialising in this type of migration. Find the OutSystems Maturity Model and assess where this migration would sit.""",
+        "response_field": "outsystems_migration"
     }
 }
 
@@ -890,7 +1334,15 @@ async def run_single_agent(
 - Search engineering blogs from Stripe, Netflix, Airbnb, Shopify, Cloudflare, Figma, and similar companies for posts about lessons learned with this same technology
 - Search the ThoughtWorks Technology Radar, InfoQ, and CNCF landscape for current industry consensus on the tools used here
 - Search CVE databases and security advisories for every dependency and framework version you identify
-- Your recommendations MUST cite what you found through research — ground every piece of advice in real, current, verifiable industry practice"""
+- Your recommendations MUST cite what you found through research — ground every piece of advice in real, current, verifiable industry practice
+
+**FORWARD-THINKING TECHNOLOGY MANDATE — Do NOT default to traditional approaches:**
+- For every major recommendation, actively consider whether an AI tool, low-code platform, or automation could achieve the same outcome faster and cheaper
+- Search for AI-powered versions of tools in your domain: AI-assisted testing (Mabl, Testim), AI-powered monitoring (Datadog AI, Sentry), AI-driven CI/CD, AI coding assistants (Cursor, GitHub Copilot Workspace, Codeium)
+- Search for low-code/no-code platforms relevant to this system: Retool, Appsmith, Bubble, Webflow, FlutterFlow, n8n, Make (Integromat), Zapier AI, Activepieces
+- Search for AI-native infrastructure alternatives: Modal, Replicate, Together AI, Groq, Vercel AI SDK, Supabase Edge Functions
+- Where relevant, provide BOTH a traditional approach AND an AI-augmented alternative — give the team real choices with honest trade-off analysis
+- Don't dismiss low-code because it's "not enterprise" — search for case studies where it succeeded and failed at this scale"""
     else:
         research_mandate = """
 **DEEP EXPERTISE MANDATE — Apply the full depth of your world-class training knowledge:**
@@ -899,7 +1351,14 @@ async def run_single_agent(
 - Apply your deep knowledge of standards bodies: NIST SP 800 series, OWASP Top 10, ISO 27001, SOC 2, WCAG 2.2, OpenAPI 3.1, IEEE, W3C
 - Connect what you observe in this SPECIFIC codebase to documented real-world failure modes, postmortems, and success stories you know about
 - Cite specific tools, libraries, and frameworks with their current best-practice configurations — generic advice is worthless to senior engineers
-- Think and write like a trusted advisor who has personally seen these exact patterns succeed and fail in production at scale"""
+- Think and write like a trusted advisor who has personally seen these exact patterns succeed and fail in production at scale
+
+**FORWARD-THINKING TECHNOLOGY MANDATE — Challenge conventional engineering assumptions:**
+- For every major recommendation, consider whether an AI tool, low-code platform, or intelligent automation could achieve the same outcome faster and cheaper
+- Reference specific AI-native tools relevant to your domain: GitHub Copilot, Cursor, v0.dev, Bolt.new, Lovable for development; Retool/Appsmith for internal tools; n8n/Make for automation; Modal/Replicate for AI inference
+- Provide tiered recommendations where strategic: a Traditional approach (proven, team already knows it), an AI-Augmented approach (adds AI tooling to existing patterns), and an AI-Native approach (redesigns with AI-first thinking)
+- Be honest about vendor lock-in, maturity risks, and when NOT to use AI/low-code — the goal is the right tool, not the newest tool
+- Challenge every "we need to build this" assumption — ask whether a SaaS, an API, or an AI agent could replace months of custom engineering"""
 
     prompt = f"""You are the **{config['name']}** on a Shift-Left Discovery panel.
 
@@ -918,36 +1377,103 @@ Below is the codebase you are analysing. Study every file carefully, then produc
 
 Now produce your analysis. Be forensically specific — reference actual file paths, function names, and line-level patterns you observed. Write with the authority and precision of the world's best practitioner in your role. Every recommendation must be actionable, grounded in your research, and tailored to what you specifically found in THIS codebase."""
 
+    # ── Persona-aware context filtering ────────────────────────────────────────
+    # Filter and rank files by relevance to this persona's domain before building
+    # the prompt. This replaces the old blunt head-truncation: every agent now
+    # gets a deep, relevant slice rather than a shallow scan of mixed noise.
+    if model_type == "anthropic" and anthropic_api_key:
+        filtered_context = filter_context_for_persona(persona_key, code_context)
+    else:
+        # Gemini agents: persona-filter first, then hard cap at GEMINI_MAX_CONTEXT_CHARS
+        filtered_context = filter_context_for_persona(persona_key, code_context)
+        if len(filtered_context) > GEMINI_MAX_CONTEXT_CHARS:
+            filtered_context = filtered_context[:GEMINI_MAX_CONTEXT_CHARS]
+            filtered_context += f"\n\n[... further truncated at {GEMINI_MAX_CONTEXT_CHARS:,} chars ...]"
+
+    # Rebuild prompt with persona-filtered context
+    prompt = prompt.replace(
+        f"--- BEGIN CODEBASE ---\n{code_context}\n--- END CODEBASE ---",
+        f"--- BEGIN CODEBASE ---\n{filtered_context}\n--- END CODEBASE ---"
+    )
+
+    async def call_gemini(reason: str = "") -> str:
+        """Run this agent on Gemini (primary path or fallback)."""
+        label = f"Researching Best Practices (Gemini){' — Claude fallback' if reason else ''}..."
+        await update_status(label)
+        gemini_client = genai.Client(api_key=gemini_api_key)
+        grounding_tool = types.Tool(google_search=types.GoogleSearch())
+        response = await gemini_client.aio.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[grounding_tool],
+                temperature=0.3
+            ),
+        )
+        return response.text
+
     try:
         await update_status("Analyzing Source Code...")
-        await asyncio.sleep(0.5) # Small padding for UI visibility
+        await asyncio.sleep(0.5)  # Small padding for UI visibility
 
         if model_type == "anthropic" and anthropic_api_key:
-            await update_status("Drafting Strategic Report (Claude)...")
-            client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
-            message = await client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=4096,
-                temperature=0.3,
-                system="You are a senior technical discovery agent. Provide deep, structured analysis.",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            content = message.content[0].text
+            # ── Semaphore: max 2 concurrent Anthropic calls ──────────────────
+            semaphore = get_anthropic_semaphore()
+            last_error = None
+
+            for attempt in range(1, ANTHROPIC_MAX_RETRIES + 1):
+                try:
+                    async with semaphore:
+                        await update_status(
+                            f"Drafting Strategic Report (Claude)"
+                            + (f" — retry {attempt}/{ANTHROPIC_MAX_RETRIES}" if attempt > 1 else "")
+                            + "..."
+                        )
+                        client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
+                        message = await client.messages.create(
+                            model="claude-sonnet-4-6",
+                            max_tokens=4096,
+                            temperature=0.3,
+                            system="You are a senior technical discovery agent. Provide deep, structured analysis.",
+                            messages=[{"role": "user", "content": prompt}]
+                        )
+                        content = message.content[0].text
+                        break  # Success — exit retry loop
+
+                except anthropic.RateLimitError as e:
+                    last_error = e
+                    delay = ANTHROPIC_RETRY_BASE_DELAY * (2 ** (attempt - 1))  # 15, 30, 60s
+                    logger.warning(
+                        f"[{persona_key}] Anthropic 429 rate limit on attempt {attempt}/{ANTHROPIC_MAX_RETRIES}. "
+                        f"Waiting {delay}s before retry."
+                    )
+                    await update_status(f"Rate limited — waiting {delay}s before retry {attempt}/{ANTHROPIC_MAX_RETRIES}...")
+                    if attempt < ANTHROPIC_MAX_RETRIES:
+                        await asyncio.sleep(delay)
+                    else:
+                        # All retries exhausted — fall back to Gemini
+                        logger.warning(f"[{persona_key}] All Claude retries exhausted. Falling back to Gemini.")
+                        await update_status("Claude retries exhausted — falling back to Gemini research...")
+                        content = await call_gemini(reason="rate_limit_fallback")
+
+                except anthropic.APIStatusError as e:
+                    if e.status_code == 529:  # Anthropic overloaded
+                        last_error = e
+                        delay = ANTHROPIC_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                        await update_status(f"Claude overloaded — waiting {delay}s before retry {attempt}/{ANTHROPIC_MAX_RETRIES}...")
+                        if attempt < ANTHROPIC_MAX_RETRIES:
+                            await asyncio.sleep(delay)
+                        else:
+                            content = await call_gemini(reason="overload_fallback")
+                    else:
+                        raise  # Non-retriable API error
+            else:
+                # Loop finished without break (shouldn't happen but safety net)
+                content = await call_gemini(reason="loop_exhausted")
+
         else:
-            # Default to Gemini (and handle case where Anthropic key is missing)
-            await update_status("Researching Best Practices (Gemini)...")
-            gemini_client = genai.Client(api_key=gemini_api_key)
-            grounding_tool = types.Tool(google_search=types.GoogleSearch())
-            
-            response = await gemini_client.aio.models.generate_content(
-                model='gemini-2.0-flash',
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[grounding_tool],
-                    temperature=0.3
-                ),
-            )
-            content = response.text
+            # Gemini primary path (or Anthropic key missing)
+            content = await call_gemini()
 
         return {
             "persona": persona_key,
@@ -982,7 +1508,7 @@ async def run_synthesis_agent(
     collected_results: Dict[str, str],
     anthropic_api_key: str,
 ) -> Dict[str, Any]:
-    """Read all 15 persona reports and produce a CTO-level master action plan."""
+    """Read all persona reports and produce a CTO-level master action plan with 3 strategic paths."""
     if not anthropic_api_key:
         return {
             "persona": "synthesis",
@@ -999,11 +1525,12 @@ async def run_synthesis_agent(
         if content and content.strip()
     ])
 
-    prompt = f"""You have received independent analysis reports from a 15-agent expert panel — each a world-class specialist who has deeply analysed the same codebase. Your role is Chief Technology Officer and Principal Advisor.
+    agent_count = len(collected_results)
+    prompt = f"""You have received independent analysis reports from a {agent_count}-agent expert panel — each a world-class specialist who has deeply analysed the same codebase. Your role is Chief Technology Officer and Principal Advisor.
 
 Read ALL reports below. Your job is to synthesise their findings, resolve contradictions, identify the highest-confidence themes, close blind spots, and produce a single authoritative Master Report.
 
---- ALL 15 AGENT REPORTS ---
+--- ALL {agent_count} AGENT REPORTS ---
 {all_reports}
 --- END OF ALL REPORTS ---
 
@@ -1019,10 +1546,43 @@ List every finding that three or more agents independently identified — these 
 Identify where agents disagreed (e.g. Performance recommending aggressive caching vs Security flagging it as a risk vector). For each contradiction: state it clearly, give your definitive recommendation, and explain the reasoning.
 
 ### Blind Spots — What the Panel Missed
-2–3 important considerations that the 15-agent panel collectively missed or underweighted. These are often the risks that cause modernisation programmes to fail.
+2–3 important considerations that the agent panel collectively missed or underweighted. These are often the risks that cause modernisation programmes to fail.
+
+### Three Strategic Paths Forward
+
+Based on ALL agent findings — including the AI Innovation Scout's assessment of AI tools and low-code opportunities — define three distinct paths a leadership team could choose. Each path must be internally consistent and genuinely different in ambition, investment, and risk.
+
+**PATH A — CONSERVATIVE**
+*Investment: <$75K | Timeline: 6 months | Team: existing headcount*
+Targeted hardening and minimal-disruption improvements. No architectural changes. AI tools adopted only at the edges (Copilot, AI-assisted testing). Maximum ROI per dollar spent with the lowest risk of disruption. Who should choose this path and why.
+
+Specific actions for this path:
+- Security & compliance fixes (list the top 3 from agent findings)
+- AI tool adoptions that slot into today's workflow with zero disruption
+- Quick wins that improve team velocity immediately
+
+**PATH B — BALANCED**
+*Investment: $75K–$250K | Timeline: 12 months | Team: existing + 1-2 specialists*
+Selective modernisation of the highest-pain areas. AI-augmented development workflows. Strategic low-code adoption for non-differentiating features. Targeted architectural improvements without a full rewrite. Who should choose this path and why.
+
+Specific actions for this path:
+- Which components get rebuilt vs. replaced with better tools
+- Which low-code/AI-native tools replace what (specific recommendations from AI Innovation Scout)
+- The architectural changes that unlock the most value for least disruption
+
+**PATH C — TRANSFORMATIVE**
+*Investment: $250K+ | Timeline: 18-24 months | Team: dedicated squad*
+AI-native rebuild where the analysis justifies it. Low-code/no-code for peripheral features. Traditional engineering only for genuine competitive differentiators. Full DevSecOps automation. Positions the organisation for a 5-year advantage. Who should choose this path and why.
+
+Specific actions for this path:
+- What gets rebuilt AI-first vs. what gets replaced vs. what gets retired
+- The team structure and skill set required
+- The transition milestones and go/no-go criteria
+
+**My Recommendation**: Which path do I recommend for this specific organisation, and what would change my mind?
 
 ### The Critical Path — Unified Prioritised Action Plan
-A single list of actions across all 15 domains, prioritised by risk, value, and technical dependency:
+A single list of actions across all domains, prioritised by risk, value, and technical dependency — regardless of which path is chosen:
 
 **This Sprint (Critical — Do Now):** Blockers, critical security risks, legal exposure
 **This Quarter (High ROI):** High-value improvements with manageable risk
@@ -1041,31 +1601,165 @@ Specific, measurable outcomes to track across: engineering velocity (DORA), secu
 ### The Bottom Line
 If this organisation can only do THREE things this quarter, what are they and exactly why? Be direct. Commit to a recommendation. No hedging."""
 
+    # Synthesis uses the largest prompt — retry aggressively on rate limits.
+    # Extended thinking is enabled: the model reasons through contradictions in
+    # a private scratchpad (budget_tokens) before writing its final answer.
+    # temperature must be 1 when thinking is enabled (API requirement).
+    THINKING_BUDGET = 8000   # tokens for internal reasoning
+    OUTPUT_BUDGET = 10000    # tokens for the final written report
+    last_error = None
+    for attempt in range(1, ANTHROPIC_MAX_RETRIES + 1):
+        try:
+            client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
+            message = await client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=THINKING_BUDGET + OUTPUT_BUDGET,
+                temperature=1,  # Required when extended thinking is enabled
+                thinking={"type": "enabled", "budget_tokens": THINKING_BUDGET},
+                system="You are a Principal CTO and technical advisor synthesising expert panel findings into a unified master action plan. Be authoritative, specific, and decisive. Resolve contradictions explicitly. Name files, tools, and patterns by name.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            # Extract only the final text blocks — discard thinking scratchpad
+            content = "\n\n".join(
+                block.text for block in message.content
+                if block.type == "text"
+            )
+            return {
+                "persona": "synthesis",
+                "name": SYNTHESIS_CONFIG["name"],
+                "emoji": SYNTHESIS_CONFIG["emoji"],
+                "status": "success",
+                "content": content
+            }
+
+        except (anthropic.RateLimitError, anthropic.APIStatusError) as e:
+            is_retriable = isinstance(e, anthropic.RateLimitError) or (
+                isinstance(e, anthropic.APIStatusError) and e.status_code == 529
+            )
+            if is_retriable and attempt < ANTHROPIC_MAX_RETRIES:
+                delay = ANTHROPIC_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                logger.warning(f"[synthesis] Rate limited on attempt {attempt}. Waiting {delay}s.")
+                await asyncio.sleep(delay)
+                last_error = e
+            else:
+                return {
+                    "persona": "synthesis",
+                    "name": SYNTHESIS_CONFIG["name"],
+                    "emoji": SYNTHESIS_CONFIG["emoji"],
+                    "status": "error",
+                    "content": f"Synthesis error after {attempt} attempts: {str(e)}"
+                }
+
+        except Exception as e:
+            return {
+                "persona": "synthesis",
+                "name": SYNTHESIS_CONFIG["name"],
+                "emoji": SYNTHESIS_CONFIG["emoji"],
+                "status": "error",
+                "content": f"Synthesis error: {str(e)}"
+            }
+
+    return {
+        "persona": "synthesis",
+        "name": SYNTHESIS_CONFIG["name"],
+        "emoji": SYNTHESIS_CONFIG["emoji"],
+        "status": "error",
+        "content": f"Synthesis failed after {ANTHROPIC_MAX_RETRIES} retries: {str(last_error)}"
+    }
+
+
+async def run_recon_agent(
+    gemini_api_key: str,
+    code_context: str,
+) -> Dict[str, Any]:
+    """
+    Reconnaissance pre-pass: a fast, lightweight Gemini call that reads the
+    codebase and returns a structured JSON summary. This summary is injected
+    into every persona agent's prompt as shared context, so agents skip the
+    'identify the tech stack' phase and dive straight into deep analysis.
+
+    Returns a dict with keys: tech_stack, architecture_style, key_files,
+    primary_language, frameworks, databases, entry_points, file_count,
+    total_chars, and raw_summary (human-readable paragraph).
+    """
+    # Send only a representative sample to keep the recon call fast and cheap
+    RECON_SAMPLE_CHARS = 80_000
+    sample = code_context[:RECON_SAMPLE_CHARS]
+    if len(code_context) > RECON_SAMPLE_CHARS:
+        sample += f"\n\n[Showing first {RECON_SAMPLE_CHARS:,} of {len(code_context):,} chars for reconnaissance]"
+
+    prompt = f"""You are a rapid codebase reconnaissance agent. Your job is NOT deep analysis — it is fast, accurate identification of what this codebase IS so that a team of specialist agents can immediately start deep analysis without wasting time on discovery.
+
+Read the codebase below and return ONLY a JSON object (no markdown, no explanation, just valid JSON) with exactly these fields:
+
+{{
+  "primary_language": "e.g. Python 3.11",
+  "frameworks": ["e.g. FastAPI", "React", "SQLAlchemy"],
+  "databases": ["e.g. PostgreSQL via Supabase", "Redis"],
+  "architecture_style": "e.g. Modular Monolith / Microservices / Serverless / MVC",
+  "deployment_model": "e.g. Docker on VPS / AWS Lambda / Heroku / Unknown",
+  "entry_points": ["e.g. main.py:app", "src/index.ts"],
+  "key_config_files": ["e.g. requirements.txt", ".env.example", "docker-compose.yml"],
+  "auth_mechanism": "e.g. JWT / Session cookies / API key / OAuth2 / None visible",
+  "test_framework": "e.g. pytest / Jest / None found",
+  "ci_cd": "e.g. GitHub Actions / GitLab CI / None found",
+  "estimated_complexity": "Low / Medium / High / Very High",
+  "notable_patterns": ["e.g. Repository pattern", "SSE streaming", "Agent-based architecture"],
+  "red_flags": ["e.g. Hardcoded secrets found in config.py", "No authentication on admin routes"],
+  "raw_summary": "2-3 sentence human-readable overview of what this system does and its current state"
+}}
+
+--- CODEBASE SAMPLE ---
+{sample}
+--- END SAMPLE ---
+
+Return ONLY the JSON object. No markdown fences, no explanation."""
+
     try:
-        client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
-        message = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=8192,
-            temperature=0.2,
-            system="You are a Principal CTO and technical advisor synthesising expert panel findings into a unified master action plan. Be authoritative, specific, and decisive. Resolve contradictions explicitly. Name files, tools, and patterns by name.",
-            messages=[{"role": "user", "content": prompt}]
+        gemini_client = genai.Client(api_key=gemini_api_key)
+        response = await gemini_client.aio.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.1),  # Low temp for factual JSON
         )
-        content = message.content[0].text
-        return {
-            "persona": "synthesis",
-            "name": SYNTHESIS_CONFIG["name"],
-            "emoji": SYNTHESIS_CONFIG["emoji"],
-            "status": "success",
-            "content": content
-        }
+        raw = response.text.strip()
+        # Strip markdown fences if the model added them anyway
+        raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw, flags=re.MULTILINE).strip()
+        recon_data = json.loads(raw)
+        recon_data["_recon_success"] = True
+        return recon_data
     except Exception as e:
-        return {
-            "persona": "synthesis",
-            "name": SYNTHESIS_CONFIG["name"],
-            "emoji": SYNTHESIS_CONFIG["emoji"],
-            "status": "error",
-            "content": f"Synthesis error: {str(e)}"
-        }
+        logger.warning(f"Recon agent failed ({e}), proceeding without recon context.")
+        return {"_recon_success": False, "raw_summary": "Reconnaissance unavailable."}
+
+
+def format_recon_for_prompt(recon: Dict[str, Any]) -> str:
+    """Render the recon JSON as a concise structured block for injection into agent prompts."""
+    if not recon.get("_recon_success"):
+        return ""
+    lines = [
+        "## Codebase Reconnaissance Summary (pre-computed — verified before your analysis begins)",
+        f"- **Language**: {recon.get('primary_language', 'Unknown')}",
+        f"- **Frameworks**: {', '.join(recon.get('frameworks', [])) or 'None identified'}",
+        f"- **Databases**: {', '.join(recon.get('databases', [])) or 'None identified'}",
+        f"- **Architecture**: {recon.get('architecture_style', 'Unknown')}",
+        f"- **Deployment**: {recon.get('deployment_model', 'Unknown')}",
+        f"- **Auth**: {recon.get('auth_mechanism', 'Unknown')}",
+        f"- **Testing**: {recon.get('test_framework', 'None found')}",
+        f"- **CI/CD**: {recon.get('ci_cd', 'None found')}",
+        f"- **Complexity**: {recon.get('estimated_complexity', 'Unknown')}",
+        f"- **Entry points**: {', '.join(recon.get('entry_points', [])) or 'Unknown'}",
+    ]
+    if recon.get("notable_patterns"):
+        lines.append(f"- **Notable patterns**: {', '.join(recon['notable_patterns'])}")
+    if recon.get("red_flags"):
+        lines.append(f"- **⚠️ Recon red flags**: {'; '.join(recon['red_flags'])}")
+    lines.append(f"\n**System overview**: {recon.get('raw_summary', '')}")
+    lines.append(
+        "\nUse the above as verified baseline context. Skip re-identifying the tech stack "
+        "and go straight to deep domain analysis."
+    )
+    return "\n".join(lines)
 
 
 async def run_agent_fleet(
@@ -1092,21 +1786,54 @@ async def run_agent_fleet(
             }
         })
 
-    # Launch all 15 persona agents in parallel
-    tasks = []
-    for persona_key in PERSONA_CONFIGS:
-        task = asyncio.create_task(
-            run_single_agent(
-                persona_key,
-                gemini_api_key,
-                anthropic_api_key,
-                code_context,
-                client_context,
-                db_persona_prompts,
-                status_callback
-            )
+    # ── Phase 0: Reconnaissance pre-pass ────────────────────────────────────
+    # A fast Gemini call produces a structured repo summary. This is injected
+    # into every agent's prompt so they skip the 'identify the stack' phase.
+    yield {
+        "event": "agent_update",
+        "data": {"key": "recon", "status": "thinking", "sub_status": "Running codebase reconnaissance..."}
+    }
+    recon_data = await run_recon_agent(gemini_api_key, code_context)
+    recon_context = format_recon_for_prompt(recon_data)
+    yield {
+        "event": "agent_update",
+        "data": {
+            "key": "recon",
+            "status": "complete",
+            "sub_status": recon_data.get("raw_summary", "Reconnaissance complete."),
+            "recon": recon_data,
+        }
+    }
+
+    # ── Staggered launch — Gemini agents fire immediately (no shared rate limit).
+    # Anthropic agents use wrapper coroutines with built-in stagger delays so ALL
+    # tasks are created upfront (needed for as_completed to track them all).
+    anthropic_personas = [k for k, v in PERSONA_CONFIGS.items() if v.get("model") == "anthropic"]
+    gemini_personas = [k for k in PERSONA_CONFIGS if k not in anthropic_personas]
+
+    async def staggered_agent(persona_key: str, stagger_delay: float):
+        """Wrapper that waits stagger_delay seconds before running the agent."""
+        if stagger_delay > 0:
+            await asyncio.sleep(stagger_delay)
+        return await run_single_agent(
+            persona_key,
+            gemini_api_key,
+            anthropic_api_key,
+            code_context,
+            client_context,
+            db_persona_prompts + ("\n\n" + recon_context if recon_context else ""),
+            status_callback
         )
-        tasks.append(task)
+
+    tasks = []
+    # Gemini agents: no delay
+    for persona_key in gemini_personas:
+        tasks.append(asyncio.create_task(staggered_agent(persona_key, 0)))
+
+    # Anthropic agents: stagger each one by ANTHROPIC_LAUNCH_STAGGER seconds
+    for i, persona_key in enumerate(anthropic_personas):
+        delay = i * ANTHROPIC_LAUNCH_STAGGER
+        tasks.append(asyncio.create_task(staggered_agent(persona_key, delay)))
 
     async def monitor_tasks():
         for completed_task in asyncio.as_completed(tasks):
@@ -1131,13 +1858,13 @@ async def run_agent_fleet(
 
     await monitor_job
 
-    # ── Synthesis Pass (sequential, runs after all 15 complete) ──────────────
+    # ── Synthesis Pass (sequential, runs after all agents complete) ──────────
     yield {
         "event": "agent_update",
         "data": {
             "key": "synthesis",
             "status": "thinking",
-            "sub_status": f"Reading all {len(collected_results)} reports..."
+            "sub_status": f"Reading all {len(collected_results)} reports and generating 3 strategic paths..."
         }
     }
     synthesis_result = await run_synthesis_agent(collected_results, anthropic_api_key)
