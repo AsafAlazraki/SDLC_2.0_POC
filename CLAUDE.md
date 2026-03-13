@@ -39,6 +39,7 @@ SDLC_2.0_POC/
 ├── static/
 │   ├── index.html         ← Single-page app shell (includes full How It Works page)
 │   ├── script.js          ← All frontend JS (vanilla, module type)
+│   ├── avatars.js         ← SVG avatar generator for all 19 agents (ES module)
 │   └── styles.css         ← CSS with glassmorphism design system + hiw-* classes
 └── test_*.py              ← Various test files (not production)
 ```
@@ -282,17 +283,27 @@ Single HTML page (`index.html`) with vanilla JS (`script.js`, loaded as ES modul
 - `view-admin` — Client/persona creation
 - `view-history` — Past analysis runs from Supabase
 
-### How It Works Page (NEW — Fully Redesigned)
+### How It Works Page
 
-The page is now a comprehensive technical document with 5 sections:
-1. **Hero** — stat row (16 agents, 2 models, 15 domains)
+The page is a comprehensive technical document with 6 sections:
+1. **Hero** — stat row (19 agents, 2 models, 18 domains)
 2. **Pipeline** — all 5 phases (Phase 0 recon → ingestion → filtering → parallel fleet → synthesis), with full technical detail on each
-3. **The Fleet** — split two-column view (Claude agents left, Gemini agents right), each with deliverable summaries
+3. **The Fleet** — Interactive avatar gallery (6 grouped categories) with clickable agent cards. Each card shows the SVG avatar, name, model badge, context limit, and brief description. Clicking opens a detail modal with the agent's full identity, mission, investigation checklist, deliverables, and research mandate (parsed from `system_prompt`). The previous text-based listing is preserved under a collapsible "Full Agent Reference" `<details>` element.
 4. **Built-in Features** — Q&A Chat, GitHub Issues, Mermaid diagrams, Jira backlog, history, client context
 5. **SSE Architecture** — event type diagram, frontend handler behaviour
 6. **Full Tech Stack** — all libraries grouped by layer
 
-New CSS classes use `hiw-*` prefix. All defined at the bottom of `styles.css`.
+New CSS classes use `hiw-*` prefix (gallery: `hiw-avatar-gallery`, `hiw-avatar-card`, `hiw-gallery-group`). Agent detail modal uses `agent-detail-*` prefix. All defined in `styles.css`.
+
+### Agent Detail Modal
+
+The `agent-detail-overlay` / `agent-detail-modal` system provides deep exploration of each agent:
+- **Trigger**: Click any avatar card in the How It Works gallery
+- **Data source**: `state.personaConfigs[key].system_prompt` — parsed at display time by `parseSystemPrompt()`
+- **Parser splits on headers**: `**Your Mission**`, `**Your Deep Investigation Checklist**`, `**Your Deliverables:**`, `**Your Homework**`
+- **Sections displayed**: Identity & Expertise, Mission, Investigation Checklist, Deliverables, Research Mandate
+- **Markdown conversion**: `promptSectionToHTML()` converts bold, headers, lists to styled HTML
+- **Close**: Click overlay background, X button, or Escape key
 
 ### Key JS State Object
 
@@ -317,7 +328,7 @@ const state = {
 
 ---
 
-## Seven Major Features (All Implemented)
+## Eight Major Features (All Implemented)
 
 ### 1. Synthesis Agent — "The Verdict" (Extended Thinking enabled)
 - 19th agent, runs after all 18 parallel agents complete
@@ -354,8 +365,16 @@ const state = {
 
 ### 7. Reconnaissance Pre-Pass
 - Fast Gemini call before fleet launch, produces structured JSON baseline
-- Injected into all 15 agent prompts as verified facts
+- Injected into all 18 agent prompts as verified facts
 - Agents skip discovery phase and go straight to deep domain analysis
+
+### 8. Interactive Avatar Gallery & Agent Explorer
+- How It Works page shows all 19 agents as clickable SVG avatar cards
+- Each card displays the character avatar, name, model badge, context limit, and brief description
+- Clicking opens a detail modal with the agent's full identity, mission, investigation checklist, deliverables, and research mandate
+- Content is parsed at display time from the agent's `system_prompt` via `parseSystemPrompt()`
+- Gallery is grouped into 6 categories: Core Engineering, Quality & Security, Business & Product, Operations & Governance, Innovation & Platform, The Verdict
+- The full text-based agent reference is preserved under a collapsible `<details>` element
 
 ---
 

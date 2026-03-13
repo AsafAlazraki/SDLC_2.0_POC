@@ -1955,6 +1955,319 @@ nav {
 }
 
 /* ─────────────────────────────────────────────
+   How It Works — Avatar Gallery & Agent Detail Modal
+   ───────────────────────────────────────────── */
+
+/* Gallery Layout */
+.hiw-avatar-gallery {
+    margin-bottom: 28px;
+}
+.hiw-gallery-group {
+    margin-bottom: 24px;
+}
+.hiw-gallery-group-label {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+    padding-left: 4px;
+}
+.hiw-gallery-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+}
+
+/* Individual Avatar Card */
+.hiw-avatar-card {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
+    padding: 18px 14px 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    position: relative;
+}
+.hiw-avatar-card:hover {
+    background: rgba(255,255,255,0.06);
+    border-color: rgba(0, 242, 255, 0.25);
+    transform: translateY(-3px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+}
+.hiw-avatar-card-synthesis {
+    border-color: rgba(255, 215, 0, 0.2);
+    background: rgba(255, 215, 0, 0.03);
+}
+.hiw-avatar-card-synthesis:hover {
+    border-color: rgba(255, 215, 0, 0.4);
+}
+
+/* Portrait circle */
+.hiw-avatar-portrait {
+    width: 80px; height: 80px;
+    border-radius: 50%;
+    overflow: hidden;
+    border: 2px solid rgba(255,255,255,0.1);
+    transition: border-color 0.3s, box-shadow 0.3s;
+    flex-shrink: 0;
+}
+.hiw-avatar-card:hover .hiw-avatar-portrait {
+    border-color: var(--primary);
+    box-shadow: 0 0 16px rgba(0, 242, 255, 0.25);
+}
+.hiw-portrait-synthesis {
+    border-color: rgba(255, 215, 0, 0.3) !important;
+}
+.hiw-avatar-card-synthesis:hover .hiw-avatar-portrait {
+    border-color: rgba(255, 215, 0, 0.6) !important;
+    box-shadow: 0 0 16px rgba(255, 215, 0, 0.25) !important;
+}
+.hiw-avatar-portrait .agent-avatar-svg {
+    width: 100%; height: 100%;
+    display: block;
+}
+
+/* Info below portrait */
+.hiw-avatar-info {
+    text-align: center;
+    flex: 1;
+}
+.hiw-avatar-name {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    font-size: 0.82rem;
+    color: var(--text-main);
+    margin-bottom: 4px;
+    line-height: 1.25;
+}
+.hiw-avatar-badges {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+.hiw-context-badge {
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 4px;
+    padding: 1px 5px;
+}
+.hiw-avatar-brief {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    line-height: 1.45;
+    margin: 0;
+}
+.hiw-avatar-cta {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--primary);
+    opacity: 0;
+    transition: opacity 0.2s;
+    margin-top: 4px;
+}
+.hiw-avatar-card:hover .hiw-avatar-cta {
+    opacity: 1;
+}
+
+/* Fleet details collapsible */
+.hiw-fleet-details {
+    margin-top: 24px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    padding-top: 16px;
+}
+.hiw-fleet-summary {
+    cursor: pointer;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    padding: 8px 0;
+    list-style: none;
+    transition: color 0.2s;
+}
+.hiw-fleet-summary:hover { color: var(--primary); }
+.hiw-fleet-summary::marker,
+.hiw-fleet-summary::-webkit-details-marker { display: none; }
+.hiw-fleet-summary::before {
+    content: '▸ ';
+    transition: transform 0.2s;
+}
+.hiw-fleet-details[open] .hiw-fleet-summary::before { content: '▾ '; }
+.hiw-fleet-details[open] .hiw-model-split { margin-top: 16px; }
+
+/* ── Agent Detail Modal ──────────────────────── */
+.agent-detail-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(8px);
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+}
+.agent-detail-overlay.active {
+    opacity: 1;
+    pointer-events: auto;
+}
+.agent-detail-modal {
+    background: var(--card-bg, #0a0f1a);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 20px;
+    width: 90%;
+    max-width: 720px;
+    max-height: 85vh;
+    overflow-y: auto;
+    padding: 32px;
+    position: relative;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+    transform: translateY(20px);
+    transition: transform 0.3s ease;
+}
+.agent-detail-overlay.active .agent-detail-modal {
+    transform: translateY(0);
+}
+.agent-detail-close {
+    position: absolute;
+    top: 16px; right: 20px;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.6rem;
+    cursor: pointer;
+    width: 36px; height: 36px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    transition: background 0.2s, color 0.2s;
+}
+.agent-detail-close:hover {
+    background: rgba(255,255,255,0.08);
+    color: var(--text-main);
+}
+
+/* Header: avatar + meta side by side */
+.agent-detail-header {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    margin-bottom: 28px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.agent-detail-avatar {
+    width: 100px; height: 100px;
+    border-radius: 50%;
+    overflow: hidden;
+    border: 3px solid rgba(0, 242, 255, 0.2);
+    flex-shrink: 0;
+    box-shadow: 0 0 20px rgba(0, 242, 255, 0.1);
+}
+.agent-detail-avatar .agent-avatar-svg {
+    width: 100%; height: 100%;
+    display: block;
+}
+.agent-detail-meta h2 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 1.3rem;
+    margin: 0 0 6px;
+    color: var(--text-main);
+}
+.agent-detail-badges {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.agent-detail-model-badge {
+    font-size: 0.72rem;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+.agent-detail-context-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+.agent-detail-brief {
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    margin: 0;
+    line-height: 1.5;
+    font-style: italic;
+}
+
+/* Body sections */
+.agent-detail-body {
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+}
+.agent-detail-section h4 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.95rem;
+    color: var(--primary);
+    margin: 0 0 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(0, 242, 255, 0.1);
+}
+.agent-detail-content {
+    font-size: 0.84rem;
+    color: var(--text-muted);
+    line-height: 1.65;
+}
+.agent-detail-content p { margin: 0 0 8px; }
+.agent-detail-content ul {
+    margin: 6px 0 12px 0;
+    padding-left: 20px;
+}
+.agent-detail-content li {
+    margin-bottom: 4px;
+    line-height: 1.5;
+}
+.agent-detail-content h5 {
+    font-size: 0.88rem;
+    color: var(--text-main);
+    margin: 12px 0 6px;
+}
+.agent-detail-content strong {
+    color: var(--text-main);
+}
+
+/* Responsive gallery */
+@media (max-width: 1100px) {
+    .hiw-gallery-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 768px) {
+    .hiw-gallery-grid { grid-template-columns: repeat(2, 1fr); }
+    .agent-detail-header { flex-direction: column; text-align: center; gap: 14px; }
+    .agent-detail-badges { justify-content: center; }
+    .agent-detail-modal { padding: 20px; max-height: 90vh; }
+}
+@media (max-width: 480px) {
+    .hiw-gallery-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+    .hiw-avatar-portrait { width: 64px; height: 64px; }
+    .hiw-avatar-brief { display: none; }
+}
+
+/* ─────────────────────────────────────────────
    How It Works — Unscripted Debate section
    ───────────────────────────────────────────── */
 .hiw-debate-explainer {

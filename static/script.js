@@ -62,6 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const res = await fetch('/api/personas/config');
             state.personaConfigs = await res.json();
+            renderHIWAvatarGallery();
         } catch(e) { console.error("Could not load persona configs", e); }
     }
     loadPersonaConfigs();
@@ -1657,5 +1658,243 @@ document.addEventListener('DOMContentLoaded', () => {
         window.speechSynthesis.getVoices();
         window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
     }
+
+
+    // ─────────────────────────────────────────
+    // How It Works — Interactive Avatar Gallery
+    // ─────────────────────────────────────────
+
+    const AGENT_BRIEFS = {
+        architect:            'Evaluates system architecture, designs modernisation roadmaps, and creates Mermaid architecture diagrams.',
+        ba:                   'Generates structured Jira-format backlogs with user stories, acceptance criteria, and story points.',
+        qa:                   'Audits test coverage, builds risk registers, and designs comprehensive testing strategies.',
+        security:             'Performs OWASP Top 10 audits, scans for CVEs, and produces vulnerability registers with CVSS scores.',
+        tech_docs:            'Audits documentation coverage, writes ADR templates, runbooks, and identifies onboarding gaps.',
+        data_engineering:     'Maps data models, designs zero-downtime migration strategies, and assesses data quality.',
+        devops:               'Scores production readiness (0–100), designs CI/CD pipelines, and creates observability blueprints.',
+        product_management:   'Builds value maps, KPI dashboards, and Now/Next/Later product roadmaps with ROI analysis.',
+        ui_ux:                'Conducts UX audits (8+ findings), maps user journeys, and checks WCAG 2.2 accessibility compliance.',
+        compliance:           'Assesses GDPR/HIPAA/SOC 2/PCI-DSS applicability, maps data flows, and identifies compliance gaps.',
+        secops:               'Rates security automation maturity (1–5), audits secrets, and designs shift-left security pipelines.',
+        performance_engineer: 'Identifies 8+ bottlenecks, analyses scalability cliffs (2x/10x/100x), and designs load testing strategies.',
+        cost_analyst:         'Produces 8+ FinOps findings, cloud cost models, and build vs. buy vs. AI cost comparisons.',
+        api_designer:         'Audits REST maturity levels, produces OpenAPI 3.1 specs, and designs versioning strategies.',
+        tech_lead:            'Rates codebase health (A–F), analyses tech debt across 4 quadrants, and assesses bus factor risk.',
+        ai_innovation_scout:  'Researches AI tools and low-code platforms, produces three strategic paths, and challenges build assumptions.',
+        outsystems_architect: 'Maps codebase to OutSystems domain model, audits Forge marketplace, and assesses ODC vs O11 fit.',
+        outsystems_migration: 'Designs phased migration roadmaps, scores component complexity, and analyses the commercial model.',
+        synthesis:            'Reads all agent reports, resolves contradictions with extended thinking, and delivers the unified CTO verdict.',
+    };
+
+    const AGENT_CONTEXT_LIMITS = {
+        architect: '80K', ba: '60K', qa: '80K', security: '100K', tech_docs: '60K',
+        data_engineering: '80K', devops: '80K', product_management: '50K', ui_ux: '70K',
+        compliance: '70K', secops: '100K', performance_engineer: '80K', cost_analyst: '50K',
+        api_designer: '80K', tech_lead: '60K', ai_innovation_scout: '70K',
+        outsystems_architect: '80K', outsystems_migration: '80K', synthesis: 'All reports',
+    };
+
+    // Agent display order for the gallery (grouped by category)
+    const GALLERY_ORDER = [
+        // Core Engineering
+        'architect', 'tech_lead', 'api_designer', 'data_engineering',
+        // Quality & Security
+        'qa', 'security', 'secops', 'performance_engineer',
+        // Business & Product
+        'ba', 'product_management', 'ui_ux', 'tech_docs',
+        // Operations & Governance
+        'devops', 'compliance', 'cost_analyst',
+        // Innovation & Platform
+        'ai_innovation_scout', 'outsystems_architect', 'outsystems_migration',
+    ];
+
+    function renderHIWAvatarGallery() {
+        const gallery = document.getElementById('hiw-avatar-gallery');
+        if (!gallery || !state.personaConfigs) return;
+
+        // Add synthesis manually (not in PERSONA_CONFIGS)
+        const allConfigs = { ...state.personaConfigs };
+        if (!allConfigs.synthesis) {
+            allConfigs.synthesis = { name: 'The Verdict — Synthesis', emoji: '⚖️', model: 'anthropic' };
+        }
+
+        gallery.innerHTML = '';
+
+        // Group labels
+        const groups = [
+            { label: 'Core Engineering', keys: ['architect', 'tech_lead', 'api_designer', 'data_engineering'] },
+            { label: 'Quality & Security', keys: ['qa', 'security', 'secops', 'performance_engineer'] },
+            { label: 'Business & Product', keys: ['ba', 'product_management', 'ui_ux', 'tech_docs'] },
+            { label: 'Operations & Governance', keys: ['devops', 'compliance', 'cost_analyst'] },
+            { label: 'Innovation & Platform', keys: ['ai_innovation_scout', 'outsystems_architect', 'outsystems_migration'] },
+            { label: 'The Verdict', keys: ['synthesis'] },
+        ];
+
+        groups.forEach(group => {
+            const groupEl = document.createElement('div');
+            groupEl.className = 'hiw-gallery-group';
+
+            const labelEl = document.createElement('div');
+            labelEl.className = 'hiw-gallery-group-label';
+            labelEl.textContent = group.label;
+            groupEl.appendChild(labelEl);
+
+            const gridEl = document.createElement('div');
+            gridEl.className = 'hiw-gallery-grid';
+
+            group.keys.forEach(key => {
+                const cfg = allConfigs[key];
+                if (!cfg) return;
+
+                const model = cfg.model === 'anthropic' ? 'Claude' : 'Gemini';
+                const modelClass = cfg.model === 'anthropic' ? 'claude-badge' : 'gemini-badge';
+                const isSynthesis = key === 'synthesis';
+
+                const card = document.createElement('div');
+                card.className = `hiw-avatar-card${isSynthesis ? ' hiw-avatar-card-synthesis' : ''}`;
+                card.dataset.key = key;
+                card.innerHTML = `
+                    <div class="hiw-avatar-portrait${isSynthesis ? ' hiw-portrait-synthesis' : ''}">
+                        ${getAvatarSVG(key)}
+                    </div>
+                    <div class="hiw-avatar-info">
+                        <div class="hiw-avatar-name">${cfg.name || key}</div>
+                        <div class="hiw-avatar-badges">
+                            <span class="hiw-phase-model ${modelClass}" style="font-size:0.65rem;">${model}</span>
+                            <span class="hiw-context-badge">${AGENT_CONTEXT_LIMITS[key] || '?'}</span>
+                        </div>
+                        <p class="hiw-avatar-brief">${AGENT_BRIEFS[key] || ''}</p>
+                    </div>
+                    <div class="hiw-avatar-cta">Explore →</div>
+                `;
+                card.addEventListener('click', () => openAgentDetail(key));
+                gridEl.appendChild(card);
+            });
+
+            groupEl.appendChild(gridEl);
+            gallery.appendChild(groupEl);
+        });
+    }
+
+    // ── System Prompt Parser ────────────────────
+
+    function parseSystemPrompt(prompt) {
+        if (!prompt) return { identity: '', mission: '', checklist: '', deliverables: '', homework: '' };
+
+        const sections = { identity: '', mission: '', checklist: '', deliverables: '', homework: '' };
+
+        // Find section boundaries
+        const missionIdx = prompt.search(/\*\*Your Mission\*\*/i);
+        const checklistIdx = prompt.search(/\*\*Your Deep Investigation Checklist\*\*/i);
+        const deliverablesIdx = prompt.search(/\*\*Your Deliverables[:\*]/i);
+        const homeworkIdx = prompt.search(/\*\*Your Homework\*\*/i);
+
+        // Identity: everything before Mission
+        if (missionIdx > 0) {
+            sections.identity = prompt.substring(0, missionIdx).trim();
+        } else {
+            // Some prompts may not have explicit **Your Mission** — use first paragraph
+            const firstBreak = prompt.indexOf('\n\n');
+            if (firstBreak > 0) sections.identity = prompt.substring(0, firstBreak).trim();
+        }
+
+        // Mission: from Mission to Checklist
+        if (missionIdx >= 0) {
+            const end = checklistIdx > missionIdx ? checklistIdx : (deliverablesIdx > missionIdx ? deliverablesIdx : prompt.length);
+            sections.mission = prompt.substring(missionIdx, end).trim();
+        }
+
+        // Checklist: from Checklist to Deliverables
+        if (checklistIdx >= 0) {
+            const end = deliverablesIdx > checklistIdx ? deliverablesIdx : (homeworkIdx > checklistIdx ? homeworkIdx : prompt.length);
+            sections.checklist = prompt.substring(checklistIdx, end).trim();
+        }
+
+        // Deliverables: from Deliverables to Homework
+        if (deliverablesIdx >= 0) {
+            const end = homeworkIdx > deliverablesIdx ? homeworkIdx : prompt.length;
+            sections.deliverables = prompt.substring(deliverablesIdx, end).trim();
+        }
+
+        // Homework: everything from Homework to end
+        if (homeworkIdx >= 0) {
+            sections.homework = prompt.substring(homeworkIdx).trim();
+        }
+
+        return sections;
+    }
+
+    function promptSectionToHTML(text) {
+        if (!text) return '<p class="muted-text">Not available for this agent.</p>';
+        // Convert markdown-like formatting to HTML
+        return text
+            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+            .replace(/^### (.+)$/gm, '<h5>$1</h5>')
+            .replace(/^## (.+)$/gm, '<h4>$1</h4>')
+            .replace(/^- (.+)$/gm, '<li>$1</li>')
+            .replace(/(<li>.*<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`)
+            .replace(/\n\n/g, '</p><p>')
+            .replace(/\n/g, '<br>')
+            .replace(/^/, '<p>').replace(/$/, '</p>')
+            .replace(/<p><\/p>/g, '')
+            .replace(/<p>(<[uh])/g, '$1')
+            .replace(/(<\/[uh]\d?>)<\/p>/g, '$1');
+    }
+
+    // ── Agent Detail Modal ──────────────────────
+
+    function openAgentDetail(key) {
+        const cfg = state.personaConfigs[key] || (key === 'synthesis' ? { name: 'The Verdict — Synthesis', emoji: '⚖️', model: 'anthropic', system_prompt: '' } : null);
+        if (!cfg) return;
+
+        const overlay = document.getElementById('agent-detail-overlay');
+        const model = cfg.model === 'anthropic' ? 'Claude Sonnet 4.6' : 'Gemini 2.0 Flash';
+        const modelClass = cfg.model === 'anthropic' ? 'claude-badge' : 'gemini-badge';
+
+        // Avatar
+        document.getElementById('agent-detail-avatar').innerHTML = getAvatarSVG(key);
+
+        // Meta
+        document.getElementById('agent-detail-name').textContent = cfg.name || key;
+        const modelBadge = document.getElementById('agent-detail-model');
+        modelBadge.textContent = model;
+        modelBadge.className = `agent-detail-model-badge ${modelClass}`;
+        document.getElementById('agent-detail-context').textContent = `Context: ${AGENT_CONTEXT_LIMITS[key] || '?'} chars`;
+        document.getElementById('agent-detail-brief').textContent = AGENT_BRIEFS[key] || '';
+
+        // Parse system prompt
+        const parsed = parseSystemPrompt(cfg.system_prompt || '');
+
+        document.querySelector('#agent-detail-identity .agent-detail-content').innerHTML = promptSectionToHTML(parsed.identity);
+        document.querySelector('#agent-detail-mission .agent-detail-content').innerHTML = promptSectionToHTML(parsed.mission);
+        document.querySelector('#agent-detail-checklist .agent-detail-content').innerHTML = promptSectionToHTML(parsed.checklist);
+        document.querySelector('#agent-detail-deliverables .agent-detail-content').innerHTML = promptSectionToHTML(parsed.deliverables);
+        document.querySelector('#agent-detail-homework .agent-detail-content').innerHTML = promptSectionToHTML(parsed.homework);
+
+        // Show/hide sections that have content
+        ['identity', 'mission', 'checklist', 'deliverables', 'homework'].forEach(s => {
+            const el = document.getElementById(`agent-detail-${s}`);
+            if (el) el.style.display = parsed[s] ? '' : 'none';
+        });
+
+        overlay.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeAgentDetail() {
+        const overlay = document.getElementById('agent-detail-overlay');
+        overlay.classList.remove('active');
+        document.body.style.overflow = '';
+    }
+
+    // Modal close handlers
+    document.getElementById('agent-detail-close')?.addEventListener('click', closeAgentDetail);
+    document.getElementById('agent-detail-overlay')?.addEventListener('click', (e) => {
+        if (e.target.id === 'agent-detail-overlay') closeAgentDetail();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeAgentDetail();
+    });
+
 
 });  // end DOMContentLoaded

@@ -593,7 +593,13 @@
                     <!-- The Fleet -->
                     <div class="glass-card full-width">
                         <h3 class="modern-heading">🤖 THE 18-AGENT FLEET — EVERY PROFESSIONAL ANGLE</h3>
-                        <p class="muted-text mb-4">Each agent has a distinct identity, deep investigation checklist, strict deliverable format, and a model assignment tuned to its domain's needs. Every agent carries the forward-thinking mandate above — including two dedicated OutSystems/ODC specialists who assess the low-code platform path alongside the broader AI Innovation Scout perspective.</p>
+                        <p class="muted-text mb-4">Each agent has a distinct identity, deep investigation checklist, strict deliverable format, and a model assignment tuned to its domain's needs. Click any avatar to explore what drives them — their mission, how they think, what they deliver, and the research mandate they carry into every analysis.</p>
+
+                        <!-- Interactive Avatar Gallery — populated by JS -->
+                        <div class="hiw-avatar-gallery" id="hiw-avatar-gallery"></div>
+
+                        <details class="hiw-fleet-details">
+                        <summary class="hiw-fleet-summary">📖 Full Agent Reference — Model Assignments & Deliverables</summary>
 
                         <div class="hiw-model-split">
                             <div class="hiw-model-col claude-col">
@@ -655,6 +661,7 @@
                                 </div>
                             </div>
                         </div>
+                        </details>
                     </div>
 
                     <!-- Unscripted Debate -->
@@ -952,6 +959,46 @@
             <div class="chat-input-area">
                 <input type="text" id="chat-input" placeholder="Ask a follow-up question..." autocomplete="off">
                 <button id="chat-send-btn" class="primary-btn">→</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Agent Detail Modal (for How It Works avatar gallery) -->
+    <div class="agent-detail-overlay" id="agent-detail-overlay">
+        <div class="agent-detail-modal" id="agent-detail-modal">
+            <button class="agent-detail-close" id="agent-detail-close">&times;</button>
+            <div class="agent-detail-header">
+                <div class="agent-detail-avatar" id="agent-detail-avatar"></div>
+                <div class="agent-detail-meta">
+                    <h2 id="agent-detail-name"></h2>
+                    <div class="agent-detail-badges">
+                        <span class="agent-detail-model-badge" id="agent-detail-model"></span>
+                        <span class="agent-detail-context-badge" id="agent-detail-context"></span>
+                    </div>
+                    <p class="agent-detail-brief" id="agent-detail-brief"></p>
+                </div>
+            </div>
+            <div class="agent-detail-body" id="agent-detail-body">
+                <div class="agent-detail-section" id="agent-detail-identity">
+                    <h4>🎭 Identity & Expertise</h4>
+                    <div class="agent-detail-content"></div>
+                </div>
+                <div class="agent-detail-section" id="agent-detail-mission">
+                    <h4>🎯 Mission</h4>
+                    <div class="agent-detail-content"></div>
+                </div>
+                <div class="agent-detail-section" id="agent-detail-checklist">
+                    <h4>🔍 How They Think — Investigation Checklist</h4>
+                    <div class="agent-detail-content"></div>
+                </div>
+                <div class="agent-detail-section" id="agent-detail-deliverables">
+                    <h4>📦 What They Deliver</h4>
+                    <div class="agent-detail-content"></div>
+                </div>
+                <div class="agent-detail-section" id="agent-detail-homework">
+                    <h4>📚 Research Mandate</h4>
+                    <div class="agent-detail-content"></div>
+                </div>
             </div>
         </div>
     </div>
