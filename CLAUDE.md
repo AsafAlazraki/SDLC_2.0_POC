@@ -143,7 +143,7 @@ Before the 15 agents launch, `run_recon_agent()` makes a fast, cheap Gemini call
 
 The recon result is also yielded as an `agent_update` event with key `"recon"` and the raw JSON in `data.recon`. The frontend shows its progress in the fleet status bar.
 
-### The 15 Parallel Personas
+### The 16 Parallel Personas
 
 | Key | Name | Model | Primary Domain | Context Limit |
 |---|---|---|---|---|
@@ -162,16 +162,32 @@ The recon result is also yielded as an `agent_update` event with key `"recon"` a
 | `cost_analyst` | Cost Optimisation Analyst | Gemini | FinOps, cloud cost, waste reduction | 50K chars |
 | `api_designer` | API Designer | Claude | REST audit, OpenAPI spec, DX | 80K chars |
 | `tech_lead` | Tech Lead | Claude | Codebase health, tech debt, team topology | 60K chars |
+| `ai_innovation_scout` | AI Innovation Scout | Gemini | AI/low-code opportunities, 3 strategic paths | 70K chars |
 
-### The 16th Agent — Synthesis ("The Verdict")
+### Forward-Thinking Technology Mandate (All Agents)
 
-After all 15 complete, `run_synthesis_agent()` runs sequentially with **Claude Sonnet 4.6 + Extended Thinking**.
+Both the Gemini and Anthropic research mandates now include an explicit forward-thinking directive. Every agent must:
+- Consider AI-native tools, low-code platforms, and automation alongside traditional approaches
+- Provide tiered recommendations: Traditional / AI-Augmented / AI-Native where relevant
+- Cite specific modern tools (Cursor, Copilot, Retool, n8n, Modal, v0.dev, Bolt.new) with honest trade-off analysis
+- Challenge "we need to build this" assumptions by asking if a SaaS, API, or AI agent already solves it
+
+### The 17th Agent — Synthesis ("The Verdict")
+
+After all 16 complete, `run_synthesis_agent()` runs sequentially with **Claude Sonnet 4.6 + Extended Thinking**.
 
 - **Extended Thinking**: 8,000-token private reasoning budget (`thinking={"type":"enabled","budget_tokens":8000}`)
 - **Output budget**: 10,000 tokens (`max_tokens = 8000 + 10000 = 18000`)
 - **Temperature**: 1 (required when extended thinking is enabled)
 - Thinking blocks are stripped from the response before storing — only the final text is shown
-- Produces: Executive Summary, Consensus Findings (3+ agents), Contradictions Resolved, Blind Spots, Critical Path (sprint/quarter/long-term), Top 10 Risks, Quick Wins, Success Metrics, The Bottom Line
+- Produces: Executive Summary, Consensus Findings (3+ agents), Contradictions Resolved, Blind Spots, **Three Strategic Paths Forward** (Conservative/Balanced/Transformative), Critical Path (sprint/quarter/long-term), Top 10 Risks, Quick Wins, Success Metrics, The Bottom Line
+
+### Three Strategic Paths (NEW)
+
+The Synthesis agent now produces three distinct investment paths for every analysis:
+- **PATH A — Conservative**: <$75K, 6 months, existing team, AI tools at the edges only
+- **PATH B — Balanced**: $75K–$250K, 12 months, AI-augmented workflows, low-code for non-core features
+- **PATH C — Transformative**: $250K+, 18-24 months, AI-native rebuild, greenfield for differentiating components
 
 ### Persona-Aware Context Filtering (NEW)
 

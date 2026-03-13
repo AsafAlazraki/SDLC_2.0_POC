@@ -529,50 +529,64 @@ Agent reports (truncated):
 
 @app.post("/api/meeting/debate")
 async def meeting_debate(request: MeetingDebateRequest):
-    """Generate a debate transcript between agents showing cross-domain tensions."""
+    """Generate an unscripted debate transcript driven by actual agent findings."""
     if not ENV_ANTHROPIC_KEY:
         raise HTTPException(status_code=400, detail="Anthropic API key not configured")
 
+    # Build richer summaries so agents can make specific references, not generic platitudes
     agent_summaries = []
     for key, data in request.agent_reports.items():
         cfg = agent_engine.PERSONA_CONFIGS.get(key) or (agent_engine.SYNTHESIS_CONFIG if key == "synthesis" else {})
         name = cfg.get("name", key)
         content = data.get("content", "") if isinstance(data, dict) else str(data)
-        agent_summaries.append(f"[{key}] {name}:\n{content[:800]}")
+        # Give each agent 1200 chars so they have real specifics to cite
+        agent_summaries.append(f"[{key}] {name}:\n{content[:1200]}")
 
-    prompt = f"""You are the moderator of a CTO-level discovery board meeting. All expert agents have completed their analysis. Now generate a realistic, intellectually charged debate transcript (10-12 turns) where the experts challenge each other.
+    # Build dynamic tension points by extracting what agents actually found
+    has_innovation_scout = "ai_innovation_scout" in request.agent_reports
 
-REQUIRED TENSION POINTS (must include these conflicts):
-1. Security Engineer vs Performance Engineer: Security's controls add latency — who wins?
-2. Solutions Architect vs Tech Lead: Big-bang refactor vs pragmatic incremental debt paydown
-3. Cost Optimisation Analyst vs DevOps/SRE: Full observability stack is expensive — justify it
-4. QA Lead vs Product Manager: Test coverage gates slow delivery velocity — where's the balance?
-5. Synthesis Agent: Closes the debate with a binding recommendation that resolves the key conflicts
+    prompt = f"""You are the moderator of a CTO-level discovery board meeting. These {len(agent_summaries)} expert agents have each independently analysed the same codebase and now sit around the same table. They have real findings, real professional opinions, and — critically — genuine disagreements.
 
-Rules for each turn:
-- 2-4 conversational sentences, plain speech, NO markdown, no bullet points
-- Each agent must reference a SPECIFIC finding from their analysis (not generic platitudes)
-- Agents defend their professional position with genuine intellectual conviction
-- Language is professional but direct — real experts push back
+Your job is to generate a realistic, unscripted debate transcript (12-15 turns) where these experts challenge each other based on what they ACTUALLY found. This is not a polished keynote — it's a heated boardroom where every expert has staked their professional credibility on their analysis.
 
-Return ONLY a valid JSON array:
+GROUND RULES FOR EVERY TURN:
+1. Each speaker MUST reference a specific, concrete finding from their own report — a file name, a metric, a vulnerability, a cost figure, a user flow. No generic platitudes.
+2. Agents must DIRECTLY respond to the previous speaker — not pivot to their own agenda. Real debates are reactive.
+3. Disagreement must be substantive: "I disagree because [specific evidence]" not just "I see it differently."
+4. Concessions are allowed and realistic: "That's a fair point about X, but what you're not accounting for is..."
+5. Emotions exist but are professional: frustration at being dismissed, satisfaction when making a point land.
+6. The AI Innovation Scout (if present) must challenge at least two traditional recommendations — asking "but does this need to be built at all, or does an AI tool already solve this?"
+
+TENSION ARCS TO WEAVE THROUGH (use the actual findings below to make these specific):
+- ARC 1 — Speed vs Safety: Someone pushing for velocity clashes with someone demanding quality/security gates. Both have evidence.
+- ARC 2 — Build vs Buy vs AI: A traditionalist clashes with the Innovation Scout on whether to engineer a solution or adopt an AI/low-code platform. This is unresolved — don't let synthesis hand-wave it away.
+- ARC 3 — Investment levels: One agent argues for conservative incremental improvements; another argues the codebase needs a more transformative investment. Different risk appetites, both defensible.
+- ARC 4 — One genuine surprise: An unexpected alliance — two agents who seem opposed actually agree on something, or an agent concedes a point they initially dismissed.
+
+DEBATE FORMAT:
+- 2-4 sentences per turn, plain conversational speech (this is spoken aloud via TTS — no markdown, no bullet points, no headers)
+- Start responses with direct address: "I hear what [name] is saying, but..." or "I have to push back on that..."
+- Synthesis speaks LAST and makes binding decisions — it resolves the Build vs Buy arc definitively, names the three things that must happen first, and is direct about what was NOT resolved and why.
+
+Return ONLY a valid JSON array (no markdown wrapping, no explanation):
 [{{"speaker": "security", "text": "I need to address something the performance engineer said..."}}, ...]
 
-Available speaker keys: architect, ba, qa, security, tech_docs, data_engineering, devops, product_management, ui_ux, compliance, secops, performance_engineer, cost_analyst, api_designer, tech_lead, synthesis
+Available speaker keys: architect, ba, qa, security, tech_docs, data_engineering, devops, product_management, ui_ux, compliance, secops, performance_engineer, cost_analyst, api_designer, tech_lead{", ai_innovation_scout" if has_innovation_scout else ""}, synthesis
 
-Agent report summaries:
-{chr(10).join(agent_summaries[:10])}"""
+AGENT REPORTS (use these specifics in the debate — agents must cite their own findings):
+{chr(10).join(agent_summaries)}"""
 
     try:
         client = anthropic_sdk.AsyncAnthropic(api_key=ENV_ANTHROPIC_KEY)
         message = await client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=4000,
-            temperature=0.85,
-            system="You are a corporate meeting facilitator generating realistic expert debates. Return valid JSON array only — no markdown wrapping.",
+            max_tokens=5000,
+            temperature=0.9,
+            system="You are generating a realistic expert debate. The agents are opinionated professionals who genuinely disagree. Return a valid JSON array only — no markdown wrapping, no preamble, no trailing text.",
             messages=[{"role": "user", "content": prompt}]
         )
         text = message.content[0].text.strip()
+        # Strip markdown fences if model added them
         if "```" in text:
             text = text.split("```")[1]
             if text.startswith("json"):
@@ -581,9 +595,11 @@ Agent report summaries:
         turns = json.loads(text.strip())
     except Exception:
         turns = [
-            {"speaker": "architect", "text": "I want to highlight that the modernisation roadmap I've outlined is the most critical path forward for this codebase. The architectural debt is compounding."},
-            {"speaker": "security", "text": "I agree modernisation is needed, but security cannot be bolted on at the end. We have critical vulnerabilities that must be addressed in phase one, not phase three."},
-            {"speaker": "synthesis", "text": "Both are right. The critical path is security-first modernisation. We secure the perimeter while extracting the first bounded context. Neither camp wins alone — both must happen concurrently."}
+            {"speaker": "architect", "text": "I have to be direct: the architectural debt I found is not something we can patch around. This system has grown organically and the coupling between components means every change risks cascading failures. We need a clear modernisation path."},
+            {"speaker": "ai_innovation_scout" if has_innovation_scout else "security", "text": "I hear the architect, but before we commit to months of refactoring, I want to challenge the assumption that we build everything ourselves. At least three of the components I identified have direct low-code or AI-native alternatives that would take weeks, not quarters."},
+            {"speaker": "tech_lead", "text": "That's a fair challenge, and I've seen low-code succeed in the right contexts. But the core business logic here is genuinely differentiating — that's not where we should trade control for convenience. The question is what counts as core."},
+            {"speaker": "security", "text": "I want to make sure we don't lose sight of the immediate risk. Regardless of which path we choose, the authentication gaps I found represent legal exposure today. That's not a path discussion — that's a this-sprint fix."},
+            {"speaker": "synthesis", "text": "Here is my binding read: security remediation is non-negotiable and starts immediately regardless of strategic direction. On the build vs. buy question — I agree with the tech lead that core differentiating logic stays in-house, but the innovation scout has identified at least two non-core areas where we should run a low-code pilot in the next quarter before committing to custom builds. The architecture modernisation follows after that foundation is set."}
         ]
 
     enriched = []

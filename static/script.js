@@ -270,7 +270,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (eventType === 'agent_result') {
                 renderAgentResult(data);
-                const total = 16; // 15 personas + 1 synthesis
+                const total = 17; // 15 personas + AI Innovation Scout + 1 synthesis
                 const doneCount = document.querySelectorAll('.agent-status-card.done').length;
                 const progress = (doneCount / total) * 100;
                 const progressFill = document.getElementById('fleet-progress-fill');
@@ -1127,12 +1127,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // MEETING ROOM
     // ═══════════════════════════════════════════════════════════
 
-    // Agent seat order around the table (16 total: 15 personas + synthesis)
+    // Agent seat order around the table (17 total: 15 personas + AI Innovation Scout + synthesis)
     const MEETING_AGENT_ORDER = [
         'architect', 'ba', 'qa', 'security', 'tech_docs',
         'data_engineering', 'devops', 'product_management', 'ui_ux',
         'compliance', 'secops', 'performance_engineer', 'cost_analyst',
-        'api_designer', 'tech_lead', 'synthesis'
+        'api_designer', 'tech_lead', 'ai_innovation_scout', 'synthesis'
     ];
 
     // Voice fingerprints — distinct pitch/rate per agent so they sound different
@@ -1152,6 +1152,7 @@ document.addEventListener('DOMContentLoaded', () => {
         cost_analyst:        { pitch: 1.02, rate: 1.00 },
         api_designer:        { pitch: 1.08, rate: 1.02 },
         tech_lead:           { pitch: 0.88, rate: 0.90 },
+        ai_innovation_scout: { pitch: 1.12, rate: 1.08 },
         synthesis:           { pitch: 0.72, rate: 0.83 },
     };
 
@@ -1536,7 +1537,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const qaLog = document.getElementById('mr-qa-log');
         if (qaLog) qaLog.innerHTML = '';
 
-        updateSpeechPanel('🎙️', 'Ready to begin', 'Click "Begin Meeting" to start. All 16 experts will deliver opening statements, then debate their findings, then answer your questions.');
+        updateSpeechPanel('🎙️', 'Ready to begin', 'Click "Begin Meeting" to start. All 17 experts will deliver opening statements, then debate their findings — including challenges from the AI Innovation Scout — then answer your questions.');
         document.getElementById('mr-speaking-dots').style.display = 'none';
 
         // Reset phase bar

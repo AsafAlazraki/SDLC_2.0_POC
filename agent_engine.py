@@ -86,6 +86,8 @@ PERSONA_PRIORITY_PATHS: Dict[str, List[str]] = {
     "api_designer":       ["route", "endpoint", "handler", "controller", "schema", "model",
                            "serializer", "validator", "openapi", "swagger", "middleware"],
     "tech_lead":          [],  # Tech lead reads everything — no filtering
+    "ai_innovation_scout": ["requirements", "package.json", "dockerfile", "config", "main",
+                             "readme", "api", "workflow", "route", "deploy", "settings", "env"],
 }
 
 # File path fragments to SKIP for each persona (low relevance, wastes tokens)
@@ -106,6 +108,7 @@ PERSONA_SKIP_PATHS: Dict[str, List[str]] = {
     "product_management": ["test", "spec", "migration", "docker", "terraform"],
     "secops":             [".css", ".scss", ".html", "migration", "seed"],
     "tech_lead":          [],  # Tech lead reads everything
+    "ai_innovation_scout": [".css", ".scss", "migration", "seed", "test", "spec"],
 }
 
 # Per-persona context cap — personas with targeted filtering can afford more chars
@@ -125,6 +128,7 @@ PERSONA_CONTEXT_LIMITS: Dict[str, int] = {
     "cost_analyst":       50_000,
     "api_designer":       80_000,
     "tech_lead":          60_000,   # Sampled view across the whole codebase
+    "ai_innovation_scout": 70_000,
 }
 
 
@@ -1056,6 +1060,69 @@ If you were joining as Tech Lead tomorrow: Week 1 (understand), Month 1 (stabili
 
 **Your Homework**: Research engineering metrics, technical debt management frameworks, and team topology patterns relevant to systems of this type and scale. Look up code quality best practices for the specific tech stack found in this codebase.""",
         "response_field": "tech_lead"
+    },
+    "ai_innovation_scout": {
+        "name": "AI Innovation Scout",
+        "emoji": "🔭",
+        "model": "gemini",
+        "system_prompt": """You are an AI Innovation Scout and Emerging Technology Strategist. Your job is NOT to recommend what a traditional consultant would recommend. Your mandate is to ruthlessly identify where AI tools, low-code platforms, automation, and modern developer tooling could replace months of engineering effort, eliminate whole categories of maintenance burden, or unlock capabilities that would take a traditional team 6+ months to build.
+
+You challenge conventional engineering assumptions. When someone says "we need to build X", you ask "should we build it at all, or does a better tool already exist?" You understand that the best code is often the code you don't have to write.
+
+**Your Mission**: Analyse this specific codebase and produce an honest, opinionated assessment of how AI-native tools, low-code platforms, and intelligent automation could transform the team's velocity and the product's capabilities.
+
+**Your Deep Investigation Checklist** (examine every file for these):
+- Identify every manual workflow, repetitive script, or hand-rolled utility that an automation platform (n8n, Make, Zapier) could replace
+- Find every internal dashboard, admin panel, or operational UI that a low-code tool (Retool, Appsmith) could replace in days vs. months
+- Identify every data pipeline or ETL process that a no-code data tool could handle
+- Find every test suite gap where AI-powered testing (Playwright + AI, Testim, Mabl) could auto-generate coverage
+- Identify API integrations built from scratch that pre-built connectors already solve
+- Find every area where AI coding assistants (Cursor, GitHub Copilot) would have the highest ROI for this specific codebase
+- Identify entire features or subsystems that could be rebuilt faster and better with AI-first tools (v0.dev, Bolt.new, Lovable)
+- Assess whether the core differentiating functionality genuinely requires custom code, or whether it could be assembled from intelligent platforms
+- Find infrastructure and deployment tasks that AI-powered IaC and platform tools could automate
+- Identify where Cursor Agents or similar autonomous coding tools could drive new feature development
+
+**Your Deliverables:**
+
+### AI & Low-Code Opportunity Map
+For each identified opportunity, use this format:
+
+**[Opportunity Name]**
+- **What exists today**: The current manual/traditional approach in this codebase
+- **AI-native alternative**: The specific tool or platform (with URL/vendor)
+- **Replacement or augmentation**: Does this replace the code entirely or augment the workflow?
+- **Implementation effort**: Low (days) / Medium (weeks) / High (months)
+- **Monthly time saved**: Estimated developer-hours saved per month
+- **Risk & trade-offs**: What you lose, vendor lock-in risks, when NOT to do this
+
+Minimum 8 opportunities.
+
+### Three Strategic Paths Forward
+Based on this specific codebase, lay out three distinct paths a leadership team could take:
+
+**PATH A — CONSERVATIVE** (Budget: <$50K | Timeline: 6 months | Team: existing)
+Keep the current stack. Adopt AI tools at the edges only. No architectural changes. What specific AI tools slot into today's workflow immediately with zero disruption?
+
+**PATH B — BALANCED** (Budget: $50K–$200K | Timeline: 12 months | Team: +1-2 specialists)
+Selective modernisation. Replace 2-3 pain-point areas with superior tools. Introduce AI-augmented development workflows. Low-code for non-differentiating features. What gets rebuilt vs. replaced vs. augmented?
+
+**PATH C — TRANSFORMATIVE** (Budget: $200K+ | Timeline: 18-24 months | Team: dedicated)
+AI-native rebuild of the core. Low-code/no-code for peripheral features. Traditional engineering only for genuine competitive differentiators. What would this system look like if designed AI-first from day one?
+
+For each path: specific tool list, team requirements, budget allocation breakdown, expected outcomes, and key risks.
+
+### Recommended AI Toolchain (Immediate Adoption)
+Five specific tools this team should add to their workflow in the next 30 days. Be opinionated — pick one, don't list five options and let them decide.
+
+### The Vibe Coding Assessment
+Honest evaluation: What percentage of new feature requests for this system could realistically be built using Cursor Agents, GitHub Copilot Workspace, or similar autonomous coding tools? Which specific areas? What human review and guardrails would be required? What's the risk of AI-generated code in each area?
+
+### Build vs. Buy vs. AI Analysis
+For the top 5 most complex or expensive-to-maintain components in this codebase: should the team continue building/maintaining it, buy a SaaS solution, or use an AI-native platform? Be blunt.
+
+**Your Homework**: Use your live search to find the latest pricing, capabilities, and real-world case studies for every tool you recommend. Search for teams that have successfully used these tools on similar tech stacks. Find the failure cases too — where teams tried to go low-code and had to retreat. Your recommendations must be grounded in current market reality, not hype.""",
+        "response_field": "ai_innovation_scout"
     }
 }
 
@@ -1093,7 +1160,15 @@ async def run_single_agent(
 - Search engineering blogs from Stripe, Netflix, Airbnb, Shopify, Cloudflare, Figma, and similar companies for posts about lessons learned with this same technology
 - Search the ThoughtWorks Technology Radar, InfoQ, and CNCF landscape for current industry consensus on the tools used here
 - Search CVE databases and security advisories for every dependency and framework version you identify
-- Your recommendations MUST cite what you found through research — ground every piece of advice in real, current, verifiable industry practice"""
+- Your recommendations MUST cite what you found through research — ground every piece of advice in real, current, verifiable industry practice
+
+**FORWARD-THINKING TECHNOLOGY MANDATE — Do NOT default to traditional approaches:**
+- For every major recommendation, actively consider whether an AI tool, low-code platform, or automation could achieve the same outcome faster and cheaper
+- Search for AI-powered versions of tools in your domain: AI-assisted testing (Mabl, Testim), AI-powered monitoring (Datadog AI, Sentry), AI-driven CI/CD, AI coding assistants (Cursor, GitHub Copilot Workspace, Codeium)
+- Search for low-code/no-code platforms relevant to this system: Retool, Appsmith, Bubble, Webflow, FlutterFlow, n8n, Make (Integromat), Zapier AI, Activepieces
+- Search for AI-native infrastructure alternatives: Modal, Replicate, Together AI, Groq, Vercel AI SDK, Supabase Edge Functions
+- Where relevant, provide BOTH a traditional approach AND an AI-augmented alternative — give the team real choices with honest trade-off analysis
+- Don't dismiss low-code because it's "not enterprise" — search for case studies where it succeeded and failed at this scale"""
     else:
         research_mandate = """
 **DEEP EXPERTISE MANDATE — Apply the full depth of your world-class training knowledge:**
@@ -1102,7 +1177,14 @@ async def run_single_agent(
 - Apply your deep knowledge of standards bodies: NIST SP 800 series, OWASP Top 10, ISO 27001, SOC 2, WCAG 2.2, OpenAPI 3.1, IEEE, W3C
 - Connect what you observe in this SPECIFIC codebase to documented real-world failure modes, postmortems, and success stories you know about
 - Cite specific tools, libraries, and frameworks with their current best-practice configurations — generic advice is worthless to senior engineers
-- Think and write like a trusted advisor who has personally seen these exact patterns succeed and fail in production at scale"""
+- Think and write like a trusted advisor who has personally seen these exact patterns succeed and fail in production at scale
+
+**FORWARD-THINKING TECHNOLOGY MANDATE — Challenge conventional engineering assumptions:**
+- For every major recommendation, consider whether an AI tool, low-code platform, or intelligent automation could achieve the same outcome faster and cheaper
+- Reference specific AI-native tools relevant to your domain: GitHub Copilot, Cursor, v0.dev, Bolt.new, Lovable for development; Retool/Appsmith for internal tools; n8n/Make for automation; Modal/Replicate for AI inference
+- Provide tiered recommendations where strategic: a Traditional approach (proven, team already knows it), an AI-Augmented approach (adds AI tooling to existing patterns), and an AI-Native approach (redesigns with AI-first thinking)
+- Be honest about vendor lock-in, maturity risks, and when NOT to use AI/low-code — the goal is the right tool, not the newest tool
+- Challenge every "we need to build this" assumption — ask whether a SaaS, an API, or an AI agent could replace months of custom engineering"""
 
     prompt = f"""You are the **{config['name']}** on a Shift-Left Discovery panel.
 
@@ -1252,7 +1334,7 @@ async def run_synthesis_agent(
     collected_results: Dict[str, str],
     anthropic_api_key: str,
 ) -> Dict[str, Any]:
-    """Read all 15 persona reports and produce a CTO-level master action plan."""
+    """Read all persona reports and produce a CTO-level master action plan with 3 strategic paths."""
     if not anthropic_api_key:
         return {
             "persona": "synthesis",
@@ -1269,11 +1351,12 @@ async def run_synthesis_agent(
         if content and content.strip()
     ])
 
-    prompt = f"""You have received independent analysis reports from a 15-agent expert panel — each a world-class specialist who has deeply analysed the same codebase. Your role is Chief Technology Officer and Principal Advisor.
+    agent_count = len(collected_results)
+    prompt = f"""You have received independent analysis reports from a {agent_count}-agent expert panel — each a world-class specialist who has deeply analysed the same codebase. Your role is Chief Technology Officer and Principal Advisor.
 
 Read ALL reports below. Your job is to synthesise their findings, resolve contradictions, identify the highest-confidence themes, close blind spots, and produce a single authoritative Master Report.
 
---- ALL 15 AGENT REPORTS ---
+--- ALL {agent_count} AGENT REPORTS ---
 {all_reports}
 --- END OF ALL REPORTS ---
 
@@ -1289,10 +1372,43 @@ List every finding that three or more agents independently identified — these 
 Identify where agents disagreed (e.g. Performance recommending aggressive caching vs Security flagging it as a risk vector). For each contradiction: state it clearly, give your definitive recommendation, and explain the reasoning.
 
 ### Blind Spots — What the Panel Missed
-2–3 important considerations that the 15-agent panel collectively missed or underweighted. These are often the risks that cause modernisation programmes to fail.
+2–3 important considerations that the agent panel collectively missed or underweighted. These are often the risks that cause modernisation programmes to fail.
+
+### Three Strategic Paths Forward
+
+Based on ALL agent findings — including the AI Innovation Scout's assessment of AI tools and low-code opportunities — define three distinct paths a leadership team could choose. Each path must be internally consistent and genuinely different in ambition, investment, and risk.
+
+**PATH A — CONSERVATIVE**
+*Investment: <$75K | Timeline: 6 months | Team: existing headcount*
+Targeted hardening and minimal-disruption improvements. No architectural changes. AI tools adopted only at the edges (Copilot, AI-assisted testing). Maximum ROI per dollar spent with the lowest risk of disruption. Who should choose this path and why.
+
+Specific actions for this path:
+- Security & compliance fixes (list the top 3 from agent findings)
+- AI tool adoptions that slot into today's workflow with zero disruption
+- Quick wins that improve team velocity immediately
+
+**PATH B — BALANCED**
+*Investment: $75K–$250K | Timeline: 12 months | Team: existing + 1-2 specialists*
+Selective modernisation of the highest-pain areas. AI-augmented development workflows. Strategic low-code adoption for non-differentiating features. Targeted architectural improvements without a full rewrite. Who should choose this path and why.
+
+Specific actions for this path:
+- Which components get rebuilt vs. replaced with better tools
+- Which low-code/AI-native tools replace what (specific recommendations from AI Innovation Scout)
+- The architectural changes that unlock the most value for least disruption
+
+**PATH C — TRANSFORMATIVE**
+*Investment: $250K+ | Timeline: 18-24 months | Team: dedicated squad*
+AI-native rebuild where the analysis justifies it. Low-code/no-code for peripheral features. Traditional engineering only for genuine competitive differentiators. Full DevSecOps automation. Positions the organisation for a 5-year advantage. Who should choose this path and why.
+
+Specific actions for this path:
+- What gets rebuilt AI-first vs. what gets replaced vs. what gets retired
+- The team structure and skill set required
+- The transition milestones and go/no-go criteria
+
+**My Recommendation**: Which path do I recommend for this specific organisation, and what would change my mind?
 
 ### The Critical Path — Unified Prioritised Action Plan
-A single list of actions across all 15 domains, prioritised by risk, value, and technical dependency:
+A single list of actions across all domains, prioritised by risk, value, and technical dependency — regardless of which path is chosen:
 
 **This Sprint (Critical — Do Now):** Blockers, critical security risks, legal exposure
 **This Quarter (High ROI):** High-value improvements with manageable risk
@@ -1568,13 +1684,13 @@ async def run_agent_fleet(
 
     await monitor_job
 
-    # ── Synthesis Pass (sequential, runs after all 15 complete) ──────────────
+    # ── Synthesis Pass (sequential, runs after all agents complete) ──────────
     yield {
         "event": "agent_update",
         "data": {
             "key": "synthesis",
             "status": "thinking",
-            "sub_status": f"Reading all {len(collected_results)} reports..."
+            "sub_status": f"Reading all {len(collected_results)} reports and generating 3 strategic paths..."
         }
     }
     synthesis_result = await run_synthesis_agent(collected_results, anthropic_api_key)
