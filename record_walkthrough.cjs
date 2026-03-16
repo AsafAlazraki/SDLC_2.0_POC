@@ -244,13 +244,10 @@ async function loadSavedReport(page, reportId) {
     if (beginBtn && await beginBtn.isVisible()) {
         await beginBtn.click();
         await sleep(2000);
-        // Mute voice (headless has no audio output — avoids hanging on speechSynthesis)
-        const muteBtn = await page.$('#mr-mute-btn');
-        if (muteBtn) await muteBtn.click();
-        await sleep(600);
-        console.log('   Debate started — watching first few turns...');
-        // Let the debate run for ~25 seconds to show a few speaker turns
-        await sleep(25000);
+        console.log('   Debate started — watching opening statements + debate turns...');
+        // Headless has no speechSynthesis so speak() falls into the reading-delay path
+        // (3-12s per turn). Wait long enough to show several full turns.
+        await sleep(60000);
     } else {
         console.log('   ℹ️  Begin button not available');
         await sleep(2000);
