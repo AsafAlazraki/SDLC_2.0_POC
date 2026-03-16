@@ -9,8 +9,14 @@ load_dotenv()
 url: str = os.getenv("SUPABASE_URL", "")
 key: str = os.getenv("SUPABASE_KEY", "")
 
-# Initialize Supabase client
-supabase: Client = create_client(url, key)
+# Initialize Supabase client (graceful fallback if credentials are invalid)
+try:
+    supabase: Client = create_client(url, key)
+except Exception as e:
+    print(f"⚠️  Supabase connection failed: {e}")
+    print("   DB features (history, clients, personas) will be unavailable.")
+    print("   Core analysis will still work. Fix SUPABASE_URL/SUPABASE_KEY in .env to enable DB.")
+    supabase = None
 
 # --- Pydantic Models for DB Communication ---
 
@@ -31,25 +37,30 @@ class PersonaModel(BaseModel):
 
 # --- Clients ---
 def get_clients():
+    if not supabase: return []
     response = supabase.table("clients").select("*").execute()
     return response.data
 
 def get_client(client_id: int):
+    if not supabase: return None
     response = supabase.table("clients").select("*").eq("id", client_id).execute()
     return response.data[0] if response.data else None
 
 def create_client_db(client: ClientModel):
+    if not supabase: return None
     response = supabase.table("clients").insert({"name": client.name, "description": client.description}).execute()
     return response.data[0] if response.data else None
 
 # --- Personas ---
 def get_personas():
+    if not supabase: return []
     response = supabase.table("personas").select("*").execute()
     return response.data
 
 def create_persona_db(persona: PersonaModel):
+    if not supabase: return None
     response = supabase.table("personas").insert({
-        "role_name": persona.role_name, 
+        "role_name": persona.role_name,
         "system_prompt": persona.system_prompt
     }).execute()
     return response.data[0] if response.data else None
@@ -112,8 +123,8 @@ def seed_default_personas():
     
     missing_defaults = [d for d in defaults if d['role_name'] not in existing_roles]
     
-    if missing_defaults:
+    if missing_defaults and supabase:
         supabase.table("personas").insert(missing_defaults).execute()
         return get_personas()
-    
+
     return existing_personas
