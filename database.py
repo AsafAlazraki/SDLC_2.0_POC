@@ -1,10 +1,13 @@
 import os
+from dotenv import load_dotenv
 from supabase import create_client, Client
 from pydantic import BaseModel
 from typing import Optional
 
-url: str = "https://chrmqbxaqcuebgkmzavs.supabase.co"
-key: str = "sb_publishable_uJfX8jBnE8IAqqHOrUO57Q_SayEC6LF"
+load_dotenv()
+
+url: str = os.getenv("SUPABASE_URL", "")
+key: str = os.getenv("SUPABASE_KEY", "")
 
 # Initialize Supabase client
 supabase: Client = create_client(url, key)
