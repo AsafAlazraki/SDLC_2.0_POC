@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SDLC Discovery Engine — Memory Architecture</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --layer0: #7c3aed;
+    --layer1: #2563eb;
+    --layer2: #0891b2;
+    --layer3: #059669;
+    --layer4: #16a34a;
+    --synthesis: #d97706;
+    --bg: #060612;
+    --card: rgba(255,255,255,0.04);
+    --border: rgba(255,255,255,0.08);
+    --text: #e2e8f0;
+    --muted: #64748b;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── starfield ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      radial-gradient(1px 1px at 20% 30%, rgba(255,255,255,0.4) 0%, transparent 100%),
+      radial-gradient(1px 1px at 80% 10%, rgba(255,255,255,0.3) 0%, transparent 100%),
+      radial-gradient(1px 1px at 50% 60%, rgba(255,255,255,0.35) 0%, transparent 100%),
+      radial-gradient(1px 1px at 10% 80%, rgba(255,255,255,0.25) 0%, transparent 100%),
+      radial-gradient(1px 1px at 90% 70%, rgba(255,255,255,0.3) 0%, transparent 100%),
+      radial-gradient(1px 1px at 35% 90%, rgba(255,255,255,0.2) 0%, transparent 100%),
+      radial-gradient(1px 1px at 70% 45%, rgba(255,255,255,0.3) 0%, transparent 100%),
+      radial-gradient(1.5px 1.5px at 55% 15%, rgba(255,255,255,0.5) 0%, transparent 100%),
+      radial-gradient(1px 1px at 15% 55%, rgba(255,255,255,0.2) 0%, transparent 100%),
+      radial-gradient(1px 1px at 85% 85%, rgba(255,255,255,0.4) 0%, transparent 100%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── ambient glows ── */
+  .glow-ambient {
+    position: fixed;
+    border-radius: 50%;
+    filter: blur(120px);
+    opacity: 0.12;
+    pointer-events: none;
+    z-index: 0;
+    animation: drift 12s ease-in-out infinite alternate;
+  }
+  .glow-ambient:nth-child(1) { width: 600px; height: 600px; background: var(--layer0); top: -200px; left: -200px; animation-delay: 0s; }
+  .glow-ambient:nth-child(2) { width: 500px; height: 500px; background: var(--synthesis); bottom: -150px; right: -150px; animation-delay: -4s; }
+  .glow-ambient:nth-child(3) { width: 400px; height: 400px; background: var(--layer2); top: 40%; left: 40%; animation-delay: -8s; }
+
+  @keyframes drift {
+    from { transform: translate(0, 0) scale(1); }
+    to   { transform: translate(30px, 20px) scale(1.05); }
+  }
+
+  /* ── layout ── */
+  .wrapper {
+    position: relative;
+    z-index: 1;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 60px 32px 80px;
+  }
+
+  /* ── header ── */
+  header {
+    text-align: center;
+    margin-bottom: 64px;
+  }
+  .eyebrow {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--layer0);
+    background: rgba(124,58,237,0.12);
+    border: 1px solid rgba(124,58,237,0.3);
+    border-radius: 100px;
+    padding: 4px 16px;
+    margin-bottom: 20px;
+  }
+  h1 {
+    font-size: clamp(28px, 4vw, 44px);
+    font-weight: 800;
+    letter-spacing: -1.5px;
+    background: linear-gradient(135deg, #fff 0%, #94a3b8 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    line-height: 1.1;
+    margin-bottom: 16px;
+  }
+  .subtitle {
+    font-size: 15px;
+    color: var(--muted);
+    max-width: 520px;
+    margin: 0 auto;
+    line-height: 1.6;
+  }
+
+  /* ── stat pills ── */
+  .stats {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 28px;
+  }
+  .stat-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    padding: 6px 16px;
+    font-size: 12px;
+    font-weight: 500;
+    color: #94a3b8;
+  }
+  .stat-pill b { color: #fff; }
+  .stat-dot { width: 6px; height: 6px; border-radius: 50%; }
+
+  /* ── layers ── */
+  .stack { display: flex; flex-direction: column; gap: 0; }
+
+  .layer {
+    position: relative;
+    border-radius: 20px;
+    padding: 0 2px 2px;
+    margin-bottom: 6px;
+    transition: transform 0.2s;
+  }
+  .layer:hover { transform: translateX(4px); }
+
+  .layer-inner {
+    background: rgba(6, 6, 18, 0.85);
+    backdrop-filter: blur(20px);
+    border-radius: 18px;
+    padding: 24px 28px;
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 28px;
+    align-items: center;
+    border-top: 1px solid rgba(255,255,255,0.06);
+  }
+
+  /* gradient top border per layer */
+  .layer[data-l="0"] { background: linear-gradient(135deg, var(--layer0), #4c1d95); }
+  .layer[data-l="1"] { background: linear-gradient(135deg, var(--layer1), #1e3a8a); }
+  .layer[data-l="2"] { background: linear-gradient(135deg, var(--layer2), #164e63); }
+  .layer[data-l="3"] { background: linear-gradient(135deg, var(--layer3), #064e3b); }
+  .layer[data-l="4"] { background: linear-gradient(135deg, var(--layer4), #14532d); }
+
+  /* glow on hover */
+  .layer[data-l="0"]:hover .layer-inner { box-shadow: 0 0 40px rgba(124,58,237,0.2); }
+  .layer[data-l="1"]:hover .layer-inner { box-shadow: 0 0 40px rgba(37,99,235,0.2); }
+  .layer[data-l="2"]:hover .layer-inner { box-shadow: 0 0 40px rgba(8,145,178,0.2); }
+  .layer[data-l="3"]:hover .layer-inner { box-shadow: 0 0 40px rgba(5,150,105,0.2); }
+  .layer[data-l="4"]:hover .layer-inner { box-shadow: 0 0 40px rgba(22,163,74,0.2); }
+
+  /* connector */
+  .connector {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 32px;
+    position: relative;
+    margin: -4px 0;
+    z-index: 2;
+  }
+  .connector-line {
+    width: 2px;
+    height: 100%;
+    background: linear-gradient(to bottom, rgba(255,255,255,0.15), rgba(255,255,255,0.05));
+    position: relative;
+    overflow: visible;
+  }
+  .connector-line::after {
+    content: '';
+    position: absolute;
+    bottom: -6px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 7px solid rgba(255,255,255,0.2);
+  }
+  /* animated data particle */
+  .connector-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: white;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    animation: flow 2s linear infinite;
+    opacity: 0;
+  }
+  .connector:nth-child(2) .connector-dot { animation-delay: -0.4s; }
+  .connector:nth-child(4) .connector-dot { animation-delay: -0.8s; }
+  .connector:nth-child(6) .connector-dot { animation-delay: -1.2s; }
+  .connector:nth-child(8) .connector-dot { animation-delay: -1.6s; }
+  @keyframes flow {
+    0%   { top: 0%; opacity: 0; }
+    10%  { opacity: 1; }
+    90%  { opacity: 1; }
+    100% { top: 100%; opacity: 0; }
+  }
+
+  /* ── layer label ── */
+  .layer-label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .layer-number {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    opacity: 0.5;
+  }
+  .layer-name {
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.3;
+    color: #fff;
+  }
+  .layer-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    padding: 2px 8px;
+    border-radius: 100px;
+    margin-top: 4px;
+    width: fit-content;
+  }
+  .status-built { background: rgba(5,150,105,0.2); color: #34d399; border: 1px solid rgba(52,211,153,0.25); }
+  .status-new   { background: rgba(124,58,237,0.2); color: #a78bfa; border: 1px solid rgba(167,139,250,0.25); }
+  .status-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+  /* ── layer content ── */
+  .layer-content { display: flex; flex-direction: column; gap: 12px; }
+  .layer-desc {
+    font-size: 13px;
+    color: #94a3b8;
+    line-height: 1.6;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .chip {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.04);
+    color: #cbd5e1;
+    white-space: nowrap;
+  }
+
+  /* colour tints per layer */
+  .layer[data-l="0"] .chip { border-color: rgba(124,58,237,0.3); color: #c4b5fd; }
+  .layer[data-l="1"] .chip { border-color: rgba(37,99,235,0.3);  color: #93c5fd; }
+  .layer[data-l="2"] .chip { border-color: rgba(8,145,178,0.3);  color: #67e8f9; }
+  .layer[data-l="3"] .chip { border-color: rgba(5,150,105,0.3);  color: #6ee7b7; }
+  .layer[data-l="4"] .chip { border-color: rgba(22,163,74,0.3);  color: #86efac; }
+
+  /* ── synthesis ── */
+  .synthesis-wrap {
+    margin-top: 6px;
+    border-radius: 20px;
+    padding: 2px;
+    background: linear-gradient(135deg, #d97706, #b45309, #92400e, #d97706);
+    background-size: 200% 200%;
+    animation: gradientShift 4s ease infinite;
+    position: relative;
+  }
+  @keyframes gradientShift {
+    0%   { background-position: 0% 50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+  /* pulsing outer glow */
+  .synthesis-wrap::before {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 24px;
+    background: linear-gradient(135deg, #d97706, #b45309);
+    filter: blur(16px);
+    opacity: 0.35;
+    animation: pulse 2.5s ease-in-out infinite;
+    z-index: -1;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.2; transform: scale(1); }
+    50%       { opacity: 0.45; transform: scale(1.01); }
+  }
+
+  .synthesis-inner {
+    background: rgba(6, 6, 18, 0.92);
+    backdrop-filter: blur(20px);
+    border-radius: 18px;
+    padding: 32px 28px;
+  }
+  .synthesis-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .synthesis-title-group { display: flex; flex-direction: column; gap: 4px; }
+  .synthesis-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: #f59e0b;
+    opacity: 0.7;
+  }
+  .synthesis-title {
+    font-size: 22px;
+    font-weight: 800;
+    background: linear-gradient(135deg, #fbbf24, #f59e0b, #d97706);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: -0.5px;
+  }
+  .model-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(217,119,6,0.12);
+    border: 1px solid rgba(217,119,6,0.3);
+    border-radius: 100px;
+    padding: 6px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fbbf24;
+  }
+  .model-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #f59e0b;
+    box-shadow: 0 0 8px #f59e0b;
+    animation: blink 1.5s ease-in-out infinite;
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 1; box-shadow: 0 0 8px #f59e0b; }
+    50%       { opacity: 0.4; box-shadow: 0 0 2px #f59e0b; }
+  }
+
+  /* ── context flow into synthesis ── */
+  .context-flow {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  .ctx-card {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 12px;
+    padding: 14px 12px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s, transform 0.2s;
+    cursor: default;
+  }
+  .ctx-card:hover { transform: translateY(-2px); }
+  .ctx-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+  }
+  .ctx-card:nth-child(1)::before { background: var(--layer0); }
+  .ctx-card:nth-child(2)::before { background: var(--layer1); }
+  .ctx-card:nth-child(3)::before { background: var(--layer2); }
+  .ctx-card:nth-child(4)::before { background: var(--synthesis); }
+  .ctx-card:nth-child(5)::before { background: var(--layer4); }
+  .ctx-card:nth-child(1):hover { border-color: rgba(124,58,237,0.4); }
+  .ctx-card:nth-child(2):hover { border-color: rgba(37,99,235,0.4); }
+  .ctx-card:nth-child(3):hover { border-color: rgba(8,145,178,0.4); }
+  .ctx-card:nth-child(4):hover { border-color: rgba(217,119,6,0.4); }
+  .ctx-card:nth-child(5):hover { border-color: rgba(22,163,74,0.4); }
+
+  .ctx-tokens {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+    line-height: 1;
+    margin-bottom: 6px;
+  }
+  .ctx-unit { font-size: 10px; font-weight: 500; color: var(--muted); margin-bottom: 8px; }
+  .ctx-label { font-size: 11px; font-weight: 500; color: #94a3b8; line-height: 1.3; }
+
+  .total-bar {
+    background: rgba(217,119,6,0.08);
+    border: 1px solid rgba(217,119,6,0.2);
+    border-radius: 10px;
+    padding: 12px 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .total-label { font-size: 12px; color: var(--muted); }
+  .total-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 700;
+    color: #fbbf24;
+  }
+  .capacity-bar {
+    flex: 1;
+    min-width: 120px;
+    height: 6px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 100px;
+    overflow: hidden;
+  }
+  .capacity-fill {
+    height: 100%;
+    width: 27%;
+    background: linear-gradient(90deg, #f59e0b, #d97706);
+    border-radius: 100px;
+    position: relative;
+  }
+  .capacity-fill::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+    animation: shimmer 2s linear infinite;
+  }
+  @keyframes shimmer {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+  }
+
+  /* ── footer ── */
+  footer {
+    text-align: center;
+    margin-top: 64px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+  .footer-note {
+    font-size: 11px;
+    color: #334155;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .footer-brand {
+    font-size: 11px;
+    color: #475569;
+  }
+
+  /* ── responsive ── */
+  @media (max-width: 680px) {
+    .layer-inner { grid-template-columns: 1fr; }
+    .context-flow { grid-template-columns: repeat(3, 1fr); }
+    .context-flow .ctx-card:nth-child(4),
+    .context-flow .ctx-card:nth-child(5) { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="glow-ambient"></div>
+<div class="glow-ambient"></div>
+<div class="glow-ambient"></div>
+
+<div class="wrapper">
+
+  <!-- ── header ── -->
+  <header>
+    <div class="eyebrow">Memory Architecture v2.0</div>
+    <h1>SDLC Discovery Engine<br>5-Layer Context Stack</h1>
+    <p class="subtitle">From stateless one-shot analysis to context-rich, institutionally-aware reasoning. Every agent now knows PDX's methodology, the client's constraints, and what was found last time.</p>
+    <div class="stats">
+      <div class="stat-pill"><span class="stat-dot" style="background:#7c3aed"></span>19 <b>Agents</b></div>
+      <div class="stat-pill"><span class="stat-dot" style="background:#2563eb"></span>2 <b>AI Models</b></div>
+      <div class="stat-pill"><span class="stat-dot" style="background:#0891b2"></span>5 <b>Memory Layers</b></div>
+      <div class="stat-pill"><span class="stat-dot" style="background:#d97706"></span>1M <b>Token Context</b></div>
+      <div class="stat-pill"><span class="stat-dot" style="background:#16a34a"></span>~271K <b>Tokens Used</b></div>
+    </div>
+  </header>
+
+  <!-- ── stack ── -->
+  <div class="stack">
+
+    <!-- Layer 4 -->
+    <div class="layer" data-l="4">
+      <div class="layer-inner">
+        <div class="layer-label">
+          <span class="layer-number">Layer 04</span>
+          <span class="layer-name">Working Memory</span>
+          <span class="layer-status status-built"><span class="status-dot"></span>Built</span>
+        </div>
+        <div class="layer-content">
+          <p class="layer-desc">Per-run analysis material. The codebase is ingested from GitHub, split by persona relevance, and accompanied by a fast Gemini reconnaissance pre-pass that establishes verified baseline facts for all agents.</p>
+          <div class="chips">
+            <span class="chip">GitHub API Ingestion</span>
+            <span class="chip">Persona-Aware Filtering</span>
+            <span class="chip">Recon Pre-Pass</span>
+            <span class="chip">Priority Scoring</span>
+            <span class="chip">50K–100K chars/agent</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector"><div class="connector-line"><div class="connector-dot"></div></div></div>
+
+    <!-- Layer 3 -->
+    <div class="layer" data-l="3">
+      <div class="layer-inner">
+        <div class="layer-label">
+          <span class="layer-number">Layer 03</span>
+          <span class="layer-name">Role Identity</span>
+          <span class="layer-status status-built"><span class="status-dot"></span>Built + overlay new</span>
+        </div>
+        <div class="layer-content">
+          <p class="layer-desc">Each agent's professional identity, domain expertise, and research mandate. Enhanced with per-role PDX overlay: house style, preferred patterns, methodology standards that sit above the generic role definition.</p>
+          <div class="chips">
+            <span class="chip">18 Persona Configs</span>
+            <span class="chip">PDX Role Overlay</span>
+            <span class="chip">Research Mandate</span>
+            <span class="chip">Gemini Search Grounding</span>
+            <span class="chip">Claude Deep Expertise</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector"><div class="connector-line"><div class="connector-dot"></div></div></div>
+
+    <!-- Layer 2 -->
+    <div class="layer" data-l="2">
+      <div class="layer-inner">
+        <div class="layer-label">
+          <span class="layer-number">Layer 02</span>
+          <span class="layer-name">Project Context</span>
+          <span class="layer-status status-new"><span class="status-dot"></span>New</span>
+        </div>
+        <div class="layer-content">
+          <p class="layer-desc">Per-engagement brief: strategic goals, budget range, timeline, key risks, and stakeholder priorities. Entered before analysis begins. Injected into all 18 agents — agents never recommend $500K transformations to a $75K client again.</p>
+          <div class="chips">
+            <span class="chip">Strategic Goals</span>
+            <span class="chip">Budget Range</span>
+            <span class="chip">Timeline</span>
+            <span class="chip">Key Risks</span>
+            <span class="chip">Stakeholder Priorities</span>
+            <span class="chip">Supabase projects table</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector"><div class="connector-line"><div class="connector-dot"></div></div></div>
+
+    <!-- Layer 1 -->
+    <div class="layer" data-l="1">
+      <div class="layer-inner">
+        <div class="layer-label">
+          <span class="layer-number">Layer 01</span>
+          <span class="layer-name">Episodic Memory</span>
+          <span class="layer-status status-new"><span class="status-dot"></span>New</span>
+        </div>
+        <div class="layer-content">
+          <p class="layer-desc">Previous analysis findings for the same repository. Agents are told what was flagged last time, what persists unresolved, and what improved. Enables regression tracking across engagement cycles.</p>
+          <div class="chips">
+            <span class="chip">Cross-Run Retrieval</span>
+            <span class="chip">Repo Fingerprinting</span>
+            <span class="chip">Delta Tracking</span>
+            <span class="chip">Unresolved Findings</span>
+            <span class="chip">Severity Escalation</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector"><div class="connector-line"><div class="connector-dot"></div></div></div>
+
+    <!-- Layer 0 -->
+    <div class="layer" data-l="0">
+      <div class="layer-inner">
+        <div class="layer-label">
+          <span class="layer-number">Layer 00</span>
+          <span class="layer-name">Institutional<br>Memory</span>
+          <span class="layer-status status-new"><span class="status-dot"></span>New</span>
+        </div>
+        <div class="layer-content">
+          <p class="layer-desc">The PDX knowledge base. Methodology docs, retros, playbooks, and case studies uploaded once, retrieved forever. Chunked, embedded via Gemini, stored in pgvector (Supabase). Top-K semantic chunks injected per agent domain at every run.</p>
+          <div class="chips">
+            <span class="chip">pgvector / Supabase</span>
+            <span class="chip">Gemini Embeddings</span>
+            <span class="chip">1K-char Chunks</span>
+            <span class="chip">Cosine Similarity</span>
+            <span class="chip">Domain-Matched Retrieval</span>
+            <span class="chip">Auto-Extract from Syntheses</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- connector to synthesis -->
+    <div class="connector" style="height: 40px;">
+      <div class="connector-line" style="background: linear-gradient(to bottom, rgba(255,255,255,0.2), rgba(217,119,6,0.4));">
+        <div class="connector-dot" style="background:#fbbf24; box-shadow:0 0 6px #fbbf24;"></div>
+      </div>
+    </div>
+
+    <!-- Synthesis -->
+    <div class="synthesis-wrap">
+      <div class="synthesis-inner">
+        <div class="synthesis-header">
+          <div class="synthesis-title-group">
+            <span class="synthesis-label">19th Agent · Sequential · Extended Thinking</span>
+            <span class="synthesis-title">The Verdict — Synthesis</span>
+          </div>
+          <div class="model-badge"><span class="model-dot"></span>Claude Opus 4.6 · 1M Context</div>
+        </div>
+
+        <div class="context-flow">
+          <div class="ctx-card">
+            <div class="ctx-tokens">~6K</div>
+            <div class="ctx-unit">tokens</div>
+            <div class="ctx-label">PDX<br>Knowledge Base</div>
+          </div>
+          <div class="ctx-card">
+            <div class="ctx-tokens">~10K</div>
+            <div class="ctx-unit">tokens</div>
+            <div class="ctx-label">Previous<br>Runs (L1)</div>
+          </div>
+          <div class="ctx-card">
+            <div class="ctx-tokens">~1K</div>
+            <div class="ctx-unit">tokens</div>
+            <div class="ctx-label">Project<br>Context (L2)</div>
+          </div>
+          <div class="ctx-card">
+            <div class="ctx-tokens">~54K</div>
+            <div class="ctx-unit">tokens</div>
+            <div class="ctx-label">All 18 Agent<br>Reports</div>
+          </div>
+          <div class="ctx-card">
+            <div class="ctx-tokens">~200K</div>
+            <div class="ctx-unit">tokens</div>
+            <div class="ctx-label">Full Codebase<br>(unfiltered)</div>
+          </div>
+        </div>
+
+        <div class="total-bar">
+          <span class="total-label">Total context consumed</span>
+          <span class="total-value">~271K / 1,000K tokens (27%)</span>
+          <div class="capacity-bar"><div class="capacity-fill"></div></div>
+          <span class="total-label" style="white-space:nowrap">73% headroom remaining</span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /stack -->
+
+  <footer>
+    <span class="footer-note">// architecture-diagram.html · SDLC Discovery Engine v2.0</span>
+    <span class="footer-brand">PDX · Powered by Claude Opus 4.6 + Gemini 2.0 Flash</span>
+  </footer>
+
+</div><!-- /wrapper -->
+</body>
+</html>
