@@ -267,9 +267,90 @@ The difference is not incremental. An agent briefed this way doesn't start with 
 | 5 | Google Workspace Integration (Drive sync + Gmail ingestion) | 10–14 hrs |
 | 6 | Slack Integration (channel indexing + post-analysis push) | 6–8 hrs |
 | 7 | HubSpot Integration (deal context ingestion + note push) | 8–10 hrs |
-| **Total** | **Full v2 Architecture** | **54–72 hrs (~2 weeks)** |
+| 8 | Autonomous Research Scheduler (research briefs + cron + audit log) | 8–12 hrs |
+| **Total** | **Full v2 Architecture** | **62–84 hrs (~2.5 weeks)** |
 
 > All estimates assume AI-assisted development (Claude Code / Cursor / Copilot). Pure manual development is approximately 3× these figures.
+
+---
+
+## Autonomous Agent Research (Self-Learning)
+
+The knowledge base doesn't have to wait for PDX to upload documents or run an analysis. Each agent can be given a **standing research brief** — a set of topics, sources, and questions it is responsible for staying current on — and triggered on a schedule to go out, research, and write its findings back into Layer 0.
+
+Over time, the knowledge base becomes a living, self-updating brain. Every agent contributes domain-specific intelligence continuously, not just when a client engagement triggers a run.
+
+### How It Works
+
+Each agent has a research brief defining its standing queries. A scheduler fires the research routine on a set cadence. The agent runs via Gemini with live Google Search grounding, synthesises what it finds, and the output is chunked, embedded, and stored in pgvector tagged with the agent's domain and the current date. The next real analysis run automatically retrieves the freshest relevant chunks.
+
+```
+Scheduler (daily/weekly)
+       │
+       ▼
+Agent Research Brief
+  "Search for: new CVEs in Node.js ecosystems, OWASP Top 10 updates,
+   recent breach post-mortems involving JWT misuse"
+       │
+       ▼
+Gemini Flash + Live Google Search
+  → Searches CVE databases, security blogs, GitHub advisories
+  → Synthesises findings into a structured summary
+       │
+       ▼
+Chunk → Embed → Store in pgvector
+  tagged: domain="security", source="autonomous-research", date=today
+       │
+       ▼
+Retrieved automatically next time the Security agent runs on a real repo
+```
+
+### What Each Agent Researches
+
+| Agent | Standing Research Topics |
+|-------|--------------------------|
+| Security | New CVEs, OWASP updates, recent breach post-mortems, new attack patterns |
+| DevOps/SRE | New tooling releases, ThoughtWorks Radar, incident case studies |
+| Architect | New architectural patterns, InfoQ/Martin Fowler posts, platform announcements |
+| Compliance | Regulatory changes, GDPR/SOC2 updates, ICO rulings, new data protection guidance |
+| Cost Analyst | Cloud pricing changes, FinOps community findings, new reserved instance models |
+| AI Innovation Scout | New model releases, new AI tooling, benchmark results, emerging platforms |
+| OutSystems Architect | Forge component releases, ODC roadmap updates, new connectors |
+| OutSystems Migration | Pricing model changes, customer case studies, migration tooling updates |
+| Performance Engineer | New profiling tools, database optimisation patterns, CDN and caching advances |
+| All agents | ThoughtWorks Radar updates relevant to their domain |
+
+### Research Cadence
+
+Three tiers, each with a different depth and cost profile:
+
+**Daily — Breaking signals (Gemini Flash, ~2 min per agent)**
+Scans for high-urgency items: new critical CVEs, major platform outages, significant model releases. Lightweight. Each agent produces a 200–300 word summary.
+
+**Weekly — Deep research (Gemini with extended search, ~10 min per agent)**
+Full domain sweep. Each agent produces a structured 500–800 word synthesis covering new developments, updated best practices, and anything that should change how it advises on analyses.
+
+**Monthly — Retrospective (Claude Sonnet, ~5 min per agent)**
+Each agent reviews what it has learned over the past month, identifies patterns across its weekly summaries, and produces a consolidated "state of the domain" briefing that replaces the accumulated weekly chunks with a single high-quality synthesis.
+
+### Cost Impact of Autonomous Research
+
+This is the most striking part of the model: the background research cost is negligible.
+
+| Cadence | Model | Cost per agent | 18 agents | Monthly total |
+|---------|-------|---------------|-----------|---------------|
+| Daily scan | Gemini Flash | ~$0.001 | ~$0.02/day | ~$0.50 |
+| Weekly deep research | Gemini + Search | ~$0.01 | ~$0.18/week | ~$0.72 |
+| Monthly retrospective | Sonnet 4.6 | ~$0.05 | ~$0.90/month | ~$0.90 |
+| **Total background cost** | | | | **~$2–3/month** |
+
+The entire autonomous research programme costs less per month than a single on-demand analysis run. The knowledge base compounds continuously for essentially no marginal cost.
+
+### Implementation
+
+Autonomous research requires one new component: a scheduler. In the existing FastAPI/Python stack this is a background task runner (APScheduler or a simple cron wrapper). Each agent's research brief is stored alongside its persona config and can be edited from the admin UI. Research runs are logged so PDX can audit what each agent has been learning.
+
+This is Phase 8 in the build plan — added below.
 
 ---
 
@@ -282,6 +363,8 @@ The difference is not incremental. An agent briefed this way doesn't start with 
 | Knowledge base retrieval (embeddings) | ~$0.01 | Negligible |
 | Integration pulls (Drive, Slack, HubSpot) | ~$0.00 | API calls only, no AI cost |
 | **Total per run** | **~$5–12** | Trivial vs. consultant day rate |
+
+**Background research (always-on, not per-run):** ~$2–3/month total across all 18 agents at daily + weekly + monthly cadence.
 
 ---
 
@@ -297,7 +380,9 @@ The difference is not incremental. An agent briefed this way doesn't start with 
 
 5. **Whole-organisation intelligence** — Analysis is no longer bounded by what's in the codebase. It reflects everything PDX knows about the client across every system they use.
 
-6. **Competitive moat** — No other tool has layered institutional memory fed from live workspace integrations, backed by an 18-agent specialist fleet. This is the difference between a generic AI scanner and a PDX-powered discovery practice.
+6. **Self-improving agents** — Agents don't just get smarter from engagements. They research their domains continuously on a schedule, arriving at every analysis already current on the latest CVEs, platform changes, regulatory updates, and industry patterns. The system gets better whether or not PDX is actively using it.
+
+7. **Competitive moat** — No other tool has layered institutional memory, live workspace integrations, autonomous agent research, and an 18-agent specialist fleet. This is the difference between a generic AI scanner and a PDX-powered discovery practice that compounds in value over time.
 
 ---
 
