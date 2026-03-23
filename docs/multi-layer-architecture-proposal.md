@@ -8,15 +8,47 @@
 
 Every analysis run currently starts from zero. Agents have no knowledge of PDX's methodology, no memory of what was flagged last time on the same repository, and no awareness of the client's strategic context, budget, or stakeholder priorities. Beyond the codebase itself, there is a wealth of institutional knowledge already sitting in tools the team uses every day — Google Drive, Gmail, Slack, HubSpot — none of which currently reaches the agents.
 
-This proposal introduces a 5-layer persistent memory architecture where Layer 0 — the PDX Knowledge Base — is fed continuously from all of those sources, making it the living brain of the entire system.
+This proposal introduces a 6-layer persistent memory architecture. Layer 0 — the PDX Knowledge Base — is the living brain, fed from connected workspace tools. Layer 5 — Autonomous Domain Intelligence — sits beneath it all as the always-on research engine that feeds Layer 0 with current, externally sourced knowledge on a continuous schedule, independent of any client engagement.
 
 ---
 
 ## Architecture Overview
 
-Agent prompts are assembled at runtime from 5 distinct layers, each building on the one below. Every agent in the 18-strong fleet — and the Opus 4.6 Synthesis agent — receives the full stack before analysing a single line of code.
+Agent prompts are assembled at runtime from 6 distinct layers, each building on the one below. Every agent in the 18-strong fleet — and the Opus 4.6 Synthesis agent — receives the full stack before analysing a single line of code. Layer 5 operates continuously between runs, ensuring Layer 0 is always current without requiring any manual action.
 
 ```
+                        LAYER 5 — AUTONOMOUS DOMAIN INTELLIGENCE
+                        (always-on, runs between engagements)
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                                                                         │
+  │  ┌──────────────────────────────────────────────────────────────────┐   │
+  │  │  Scheduler (APScheduler / cron)                                  │   │
+  │  │  Daily: breaking signals │ Weekly: deep sweep │ Monthly: retro   │   │
+  │  └──────────────────────────────┬───────────────────────────────────┘   │
+  │                                 │  fires per-agent research brief       │
+  │    ┌──────┐ ┌──────┐ ┌──────┐  │  ┌──────┐ ┌──────┐ ┌──────┐         │
+  │    │Sec   │ │DevOps│ │Arch. │  │  │Cost  │ │Compl.│ │AI    │   ...    │
+  │    │Agent │ │Agent │ │Agent │  │  │Agent │ │Agent │ │Scout │  (×18)   │
+  │    └──┬───┘ └──┬───┘ └──┬───┘  │  └──┬───┘ └──┬───┘ └──┬───┘         │
+  │       │        │        │      │     │        │        │               │
+  │       └────────┴────────┴──────┘─────┴────────┴────────┘               │
+  │                                 │                                       │
+  │                    ┌────────────▼────────────┐                          │
+  │                    │  Gemini Flash + Live     │                          │
+  │                    │  Google Search Grounding │                          │
+  │                    │  (CVEs, Radar, papers,   │                          │
+  │                    │   pricing, releases)     │                          │
+  │                    └────────────┬────────────┘                          │
+  │                                 │ structured domain summary              │
+  │                    ┌────────────▼────────────┐                          │
+  │                    │  Chunk → Embed → Tag     │                          │
+  │                    │  domain + date + source  │                          │
+  │                    │  "autonomous-research"   │                          │
+  │                    └────────────┬────────────┘                          │
+  │                                 │ feeds into ▼                          │
+  └─────────────────────────────────┼───────────────────────────────────────┘
+                                    │
+                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                                                                         │
 │   ╔═══════════════════════════════════════════════════════════════════╗  │
@@ -61,7 +93,7 @@ Agent prompts are assembled at runtime from 5 distinct layers, each building on 
 │   ╠═══════════════════════════════════════════════════════════════════╣  │
 │   ║     LAYER 0 — INSTITUTIONAL MEMORY (PDX Knowledge Base)        ║  │
 │   ║                                                                   ║  │
-│   ║   The living brain. Fed continuously from all connected sources  ║  │
+│   ║   Fed from workspace tools + Layer 5 autonomous research feed   ║  │
 │   ║                                                                   ║  │
 │   ║  ┌──────────┐ ┌────────┐ ┌────────┐ ┌─────────┐ ┌──────────┐  ║  │
 │   ║  │ Google   │ │ Gmail  │ │ Slack  │ │HubSpot  │ │ Manual   │  ║  │
@@ -70,16 +102,16 @@ Agent prompts are assembled at runtime from 5 distinct layers, each building on 
 │   ║  │ Slides/  │ │        │ │        │ │         │ │          │  ║  │
 │   ║  │ PDFs)    │ │        │ │        │ │         │ │          │  ║  │
 │   ║  └────┬─────┘ └───┬────┘ └───┬────┘ └────┬────┘ └────┬─────┘  ║  │
-│   ║       │           │          │           │           │         ║  │
-│   ║       └───────────┴──────────┴───────────┴───────────┘         ║  │
-│   ║                              │                                  ║  │
-│   ║                   ┌──────────▼──────────┐                       ║  │
-│   ║                   │   Chunk & Embed     │                       ║  │
-│   ║                   │  (Gemini Embeddings)│                       ║  │
-│   ║                   └──────────┬──────────┘                       ║  │
-│   ║                              │                                  ║  │
-│   ║                   ┌──────────▼──────────┐                       ║  │
-│   ║                   │  pgvector Storage   │                       ║  │
+│   ║       │           │          │           │           │  ▲      ║  │
+│   ║       └───────────┴──────────┴───────────┴───────────┘  │      ║  │
+│   ║                              │                  Layer 5  │      ║  │
+│   ║                   ┌──────────▼──────────┐       research │      ║  │
+│   ║                   │   Chunk & Embed     │◄──────── feed  │      ║  │
+│   ║                   │  (Gemini Embeddings)│               │      ║  │
+│   ║                   └──────────┬──────────┘               │      ║  │
+│   ║                              │                           │      ║  │
+│   ║                   ┌──────────▼──────────┐               │      ║  │
+│   ║                   │  pgvector Storage   │───────────────┘      ║  │
 │   ║                   │    (Supabase)       │                       ║  │
 │   ║                   └──────────┬──────────┘                       ║  │
 │   ║                              │                                  ║  │
@@ -112,7 +144,42 @@ Agent prompts are assembled at runtime from 5 distinct layers, each building on 
 
 ## Layer-by-Layer Detail
 
-### Layer 0 — Institutional Memory (PDX Knowledge Base) 
+### Layer 5 — Autonomous Domain Intelligence (Always-On)
+
+The foundation that all other layers depend on remaining current. Layer 5 is not triggered by a client engagement — it runs continuously on a schedule, independent of any usage. Each of the 18 agents has a **standing research brief**: a set of topics, sources, and questions it is responsible for monitoring. A scheduler fires the brief on a cadence, the agent runs via Gemini with live Google Search grounding, synthesises what it finds, and the output is chunked, embedded, and written into pgvector tagged with its domain and date. When a real analysis run starts, Layer 0 retrieval surfaces these chunks automatically alongside PDX's own documents.
+
+**What makes this distinct from Layer 0:** Layer 0 is *stored* institutional memory — things PDX has done, decided, or documented. Layer 5 is *externally sourced* domain intelligence — what the world has published since the last time someone looked. Together they give agents both institutional context and current knowledge.
+
+**Research cadence — three tiers:**
+
+| Tier | Cadence | Model | What it produces |
+|------|---------|-------|-----------------|
+| Breaking signals | Daily | Gemini Flash | 200–300 word alert on critical CVEs, major outages, significant model releases |
+| Deep domain sweep | Weekly | Gemini + Search | 500–800 word structured synthesis of new developments, updated best practices |
+| Retrospective | Monthly | Claude Sonnet 4.6 | Consolidated "state of the domain" that replaces accumulated weekly chunks |
+
+**What each agent researches:**
+
+| Agent | Standing Research Topics |
+|-------|--------------------------|
+| Security | New CVEs, OWASP updates, breach post-mortems, new attack patterns |
+| DevOps/SRE | New tooling releases, ThoughtWorks Radar, incident case studies |
+| Architect | New architectural patterns, InfoQ/Martin Fowler, platform announcements |
+| Compliance | Regulatory changes, GDPR/SOC2 updates, ICO rulings, data protection guidance |
+| Cost Analyst | Cloud pricing changes, FinOps findings, reserved instance model updates |
+| AI Innovation Scout | New model releases, new AI tooling, benchmark results, emerging platforms |
+| OutSystems Architect | Forge component releases, ODC roadmap updates, new connectors |
+| OutSystems Migration | Pricing model changes, customer case studies, migration tooling updates |
+| Performance Engineer | New profiling tools, database optimisation patterns, CDN and caching advances |
+| All agents | ThoughtWorks Radar updates relevant to their domain |
+
+**Cost:** ~$2–3/month total across all 18 agents at all three cadences — less than a single on-demand analysis run. The system gets smarter whether or not PDX is actively using it.
+
+**Implementation:** APScheduler (or a cron wrapper) as a FastAPI background task. Each agent's research brief is stored in the personas table alongside its system prompt and editable from the admin UI. All research runs are logged for audit — PDX can see exactly what each agent has been learning and when.
+
+---
+
+### Layer 0 — Institutional Memory (PDX Knowledge Base)
 
 The foundation of the entire stack and the most important layer to get right. This is PDX's collective intelligence — stored as vector embeddings in Supabase pgvector and retrieved semantically at the start of every run.
 
@@ -241,15 +308,17 @@ The 18 parallel agents remain on Claude Sonnet 4.6 for cost control. Only synthe
 Every agent in the fleet — before reading the codebase — receives a structured briefing assembled from all connected sources:
 
 ```
-[PDX Knowledge Base] Semantically matched methodology chunks, past project patterns,
-                     Drive docs, Gmail context, Slack history, HubSpot notes — all
-                     indexed in one vector store, retrieved by domain relevance
-[Repository History] Previous findings, deltas, unresolved items for this repo
-[Project Context]    Client brief: budget, timeline, goals, risks, stakeholders
-[Role Identity]      Agent system prompt + PDX role overlay (our standards, our style)
-[Research Mandate]   Gemini: live search grounding / Claude: deep expertise references
-[Recon Pre-pass]     Verified tech stack baseline (language, framework, architecture)
-[Codebase Slice]     Persona-filtered, relevance-scored codebase extract
+[Domain Intelligence] Latest CVEs, releases, regulatory changes, industry patterns
+                      written by this agent's autonomous research brief (Layer 5)
+                      tagged by domain + date, retrieved from pgvector
+[PDX Knowledge Base]  Semantically matched methodology chunks, past project patterns,
+                      Drive docs, Gmail context, Slack history, HubSpot notes (Layer 0)
+[Repository History]  Previous findings, deltas, unresolved items for this repo (Layer 1)
+[Project Context]     Client brief: budget, timeline, goals, risks, stakeholders (Layer 2)
+[Role Identity]       Agent system prompt + PDX role overlay — our standards, our style (Layer 3)
+[Research Mandate]    Gemini: live search grounding / Claude: deep expertise references
+[Recon Pre-pass]      Verified tech stack baseline (language, framework, architecture)
+[Codebase Slice]      Persona-filtered, relevance-scored codebase extract (Layer 4)
 ```
 
 The difference is not incremental. An agent briefed this way doesn't start with a blank slate — it starts with institutional knowledge, client history, previous findings, and strategic constraints already loaded. Analysis goes straight to depth.
@@ -274,86 +343,6 @@ The difference is not incremental. An agent briefed this way doesn't start with 
 
 ---
 
-## Autonomous Agent Research (Self-Learning)
-
-The knowledge base doesn't have to wait for PDX to upload documents or run an analysis. Each agent can be given a **standing research brief** — a set of topics, sources, and questions it is responsible for staying current on — and triggered on a schedule to go out, research, and write its findings back into Layer 0.
-
-Over time, the knowledge base becomes a living, self-updating brain. Every agent contributes domain-specific intelligence continuously, not just when a client engagement triggers a run.
-
-### How It Works
-
-Each agent has a research brief defining its standing queries. A scheduler fires the research routine on a set cadence. The agent runs via Gemini with live Google Search grounding, synthesises what it finds, and the output is chunked, embedded, and stored in pgvector tagged with the agent's domain and the current date. The next real analysis run automatically retrieves the freshest relevant chunks.
-
-```
-Scheduler (daily/weekly)
-       │
-       ▼
-Agent Research Brief
-  "Search for: new CVEs in Node.js ecosystems, OWASP Top 10 updates,
-   recent breach post-mortems involving JWT misuse"
-       │
-       ▼
-Gemini Flash + Live Google Search
-  → Searches CVE databases, security blogs, GitHub advisories
-  → Synthesises findings into a structured summary
-       │
-       ▼
-Chunk → Embed → Store in pgvector
-  tagged: domain="security", source="autonomous-research", date=today
-       │
-       ▼
-Retrieved automatically next time the Security agent runs on a real repo
-```
-
-### What Each Agent Researches
-
-| Agent | Standing Research Topics |
-|-------|--------------------------|
-| Security | New CVEs, OWASP updates, recent breach post-mortems, new attack patterns |
-| DevOps/SRE | New tooling releases, ThoughtWorks Radar, incident case studies |
-| Architect | New architectural patterns, InfoQ/Martin Fowler posts, platform announcements |
-| Compliance | Regulatory changes, GDPR/SOC2 updates, ICO rulings, new data protection guidance |
-| Cost Analyst | Cloud pricing changes, FinOps community findings, new reserved instance models |
-| AI Innovation Scout | New model releases, new AI tooling, benchmark results, emerging platforms |
-| OutSystems Architect | Forge component releases, ODC roadmap updates, new connectors |
-| OutSystems Migration | Pricing model changes, customer case studies, migration tooling updates |
-| Performance Engineer | New profiling tools, database optimisation patterns, CDN and caching advances |
-| All agents | ThoughtWorks Radar updates relevant to their domain |
-
-### Research Cadence
-
-Three tiers, each with a different depth and cost profile:
-
-**Daily — Breaking signals (Gemini Flash, ~2 min per agent)**
-Scans for high-urgency items: new critical CVEs, major platform outages, significant model releases. Lightweight. Each agent produces a 200–300 word summary.
-
-**Weekly — Deep research (Gemini with extended search, ~10 min per agent)**
-Full domain sweep. Each agent produces a structured 500–800 word synthesis covering new developments, updated best practices, and anything that should change how it advises on analyses.
-
-**Monthly — Retrospective (Claude Sonnet, ~5 min per agent)**
-Each agent reviews what it has learned over the past month, identifies patterns across its weekly summaries, and produces a consolidated "state of the domain" briefing that replaces the accumulated weekly chunks with a single high-quality synthesis.
-
-### Cost Impact of Autonomous Research
-
-This is the most striking part of the model: the background research cost is negligible.
-
-| Cadence | Model | Cost per agent | 18 agents | Monthly total |
-|---------|-------|---------------|-----------|---------------|
-| Daily scan | Gemini Flash | ~$0.001 | ~$0.02/day | ~$0.50 |
-| Weekly deep research | Gemini + Search | ~$0.01 | ~$0.18/week | ~$0.72 |
-| Monthly retrospective | Sonnet 4.6 | ~$0.05 | ~$0.90/month | ~$0.90 |
-| **Total background cost** | | | | **~$2–3/month** |
-
-The entire autonomous research programme costs less per month than a single on-demand analysis run. The knowledge base compounds continuously for essentially no marginal cost.
-
-### Implementation
-
-Autonomous research requires one new component: a scheduler. In the existing FastAPI/Python stack this is a background task runner (APScheduler or a simple cron wrapper). Each agent's research brief is stored alongside its persona config and can be edited from the admin UI. Research runs are logged so PDX can audit what each agent has been learning.
-
-This is Phase 8 in the build plan — added below.
-
----
-
 ## Per-Run API Cost
 
 | Component | Cost | Notes |
@@ -363,8 +352,7 @@ This is Phase 8 in the build plan — added below.
 | Knowledge base retrieval (embeddings) | ~$0.01 | Negligible |
 | Integration pulls (Drive, Slack, HubSpot) | ~$0.00 | API calls only, no AI cost |
 | **Total per run** | **~$5–12** | Trivial vs. consultant day rate |
-
-**Background research (always-on, not per-run):** ~$2–3/month total across all 18 agents at daily + weekly + monthly cadence.
+| Layer 5 autonomous research | ~$2–3/month | Always-on, not per-run — see Layer 5 |
 
 ---
 
