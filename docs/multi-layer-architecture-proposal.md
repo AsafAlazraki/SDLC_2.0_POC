@@ -112,9 +112,11 @@ Agent prompts are assembled at runtime from 5 distinct layers, each building on 
 
 ## Layer-by-Layer Detail
 
-### Layer 0 — Institutional Memory (PDX Knowledge Base)
+### Layer 0 — Institutional Memory (PDX Knowledge Base) 
 
 The foundation of the entire stack and the most important layer to get right. This is PDX's collective intelligence — stored as vector embeddings in Supabase pgvector and retrieved semantically at the start of every run.
+
+**Technology:** pgvector extension in Supabase, with direct connections to Google Workspace, Slack, and HubSpot as ingestion sources.
 
 At run time, each agent's domain is embedded and matched against the knowledge base. The top 5 most relevant chunks are injected into that agent's prompt before it reads a single line of code. A security agent gets PDX's past security findings and CVE patterns; the BA agent gets story templates and INVEST criteria; the architect gets past migration case studies and lessons learned.
 
