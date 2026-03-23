@@ -93,6 +93,19 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 def index():
     return FileResponse("static/index.html")
 
+@app.get("/download/walkthrough.webm")
+def download_walkthrough():
+    """Serve the recorded walkthrough video for download."""
+    video_path = "walkthrough.webm"
+    if not os.path.exists(video_path):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Walkthrough video not found. Run record_walkthrough.cjs to generate it.")
+    return FileResponse(
+        video_path,
+        media_type="video/webm",
+        headers={"Content-Disposition": "attachment; filename=sdlc-discovery-walkthrough.webm"}
+    )
+
 # ─────────────────────────────────────────────
 # Config & Status
 # ─────────────────────────────────────────────

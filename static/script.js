@@ -1255,10 +1255,20 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function speak(text, agentKey, onEnd) {
-        if (!window.speechSynthesis) { if (onEnd) onEnd(); return; }
+        if (!window.speechSynthesis) {
+            // No TTS available — show text for a readable duration then advance
+            const ms = Math.max(3000, Math.min(text.split(' ').length * 300, 12000));
+            setTimeout(() => { if (onEnd) onEnd(); }, ms);
+            return;
+        }
         window.speechSynthesis.cancel();
 
-        if (meetingState.isMuted) { if (onEnd) onEnd(); return; }
+        if (meetingState.isMuted) {
+            // Muted — keep text visible long enough to read (~300ms per word, 3–12s range)
+            const ms = Math.max(3000, Math.min(text.split(' ').length * 300, 12000));
+            setTimeout(() => { if (onEnd) onEnd(); }, ms);
+            return;
+        }
 
         const utter = new SpeechSynthesisUtterance(text);
         const profile = VOICE_PROFILES[agentKey] || { pitch: 1.0, rate: 1.0 };
