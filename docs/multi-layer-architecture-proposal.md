@@ -1,4 +1,4 @@
-# SDLC Discovery Engine — Multi-Layer Persistent Memory Architecture
+# SDLC Discovery Engine — v2 Architecture: Persistent Memory & Live Integrations
 
 > **Status:** Proposed | **Date:** 2026-03-23 | **Author:** PDX Engineering
 
@@ -6,19 +6,15 @@
 
 ## Problem Statement
 
-Every analysis run currently starts from zero. Agents have no knowledge of:
+Every analysis run currently starts from zero. Agents have no knowledge of PDX's methodology, no memory of what was flagged last time on the same repository, and no awareness of the client's strategic context, budget, or stakeholder priorities. Beyond the codebase itself, there is a wealth of client intelligence already sitting in tools the team uses every day — Google Drive, Gmail, Slack, HubSpot — none of which reaches the agents.
 
-- **PDX's methodology** — standards, playbooks, or preferred patterns
-- **Previous findings** — what was flagged last time on the same repository
-- **Client context** — budget, timeline, strategic goals, or stakeholder priorities
-
-The result is generic, stateless analysis. This proposal introduces a 5-layer persistent memory architecture that transforms agents from one-shot tools into institutionally-aware reasoning systems.
+This proposal introduces a 5-layer persistent memory architecture combined with live integrations into the tools where real project knowledge lives.
 
 ---
 
 ## Architecture Overview
 
-Agent prompts are assembled at runtime from 5 distinct layers, each building on the one below.
+Agent prompts are assembled at runtime from 5 distinct layers, each building on the one below. Every agent in the 18-strong fleet — and the Opus 4.6 Synthesis agent — receives the full stack before analysing a single line of code.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -32,7 +28,6 @@ Agent prompts are assembled at runtime from 5 distinct layers, each building on 
 │   ║   │ Ingestion   │──│ (Gemini      │──│ Context           │     ║  │
 │   ║   │ (GitHub API)│  │  Flash)      │  │ (priority scoring)│     ║  │
 │   ║   └─────────────┘  └──────────────┘  └───────────────────┘     ║  │
-│   ║   Status: ✅ BUILT                                               ║  │
 │   ╠═══════════════════════════════════════════════════════════════════╣  │
 │   ║           LAYER 3 — ROLE IDENTITY (per-agent)                   ║  │
 │   ║                                                                   ║  │
@@ -43,20 +38,15 @@ Agent prompts are assembled at runtime from 5 distinct layers, each building on 
 │   ║   │ (18 agents) │  │ (Gemini/     │  │  guide from DB)   │     ║  │
 │   ║   │             │  │  Claude)     │  │                   │     ║  │
 │   ║   └─────────────┘  └──────────────┘  └───────────────────┘     ║  │
-│   ║   Status: ✅ BUILT (PDX overlay is NEW)                         ║  │
 │   ╠═══════════════════════════════════════════════════════════════════╣  │
 │   ║           LAYER 2 — PROJECT CONTEXT (per-engagement)            ║  │
 │   ║                                                                   ║  │
 │   ║   Client brief, goals, budget, timeline, risks, stakeholders    ║  │
-│   ║   ┌─────────────────────────────────────────────────────────┐   ║  │
-│   ║   │  Pre-Analysis Brief Form                                │   ║  │
-│   ║   │  ┌──────────┐ ┌────────┐ ┌──────┐ ┌────────────────┐  │   ║  │
-│   ║   │  │Strategic │ │Budget  │ │Time- │ │ Stakeholder    │  │   ║  │
-│   ║   │  │Goals     │ │Range   │ │line  │ │ Priorities     │  │   ║  │
-│   ║   │  └──────────┘ └────────┘ └──────┘ └────────────────┘  │   ║  │
-│   ║   │  Injected into ALL 18 agents + synthesis                │   ║  │
-│   ║   └─────────────────────────────────────────────────────────┘   ║  │
-│   ║   Status: 🆕 NEW                                                ║  │
+│   ║   + Live pull from Google Drive, Gmail, Slack, HubSpot          ║  │
+│   ║   ┌──────────┐ ┌────────┐ ┌──────┐ ┌────────┐ ┌────────────┐  ║  │
+│   ║   │Strategic │ │Budget  │ │Drive │ │Slack   │ │HubSpot     │  ║  │
+│   ║   │Goals     │ │Range   │ │Docs  │ │Thread  │ │Deal Notes  │  ║  │
+│   ║   └──────────┘ └────────┘ └──────┘ └────────┘ └────────────┘  ║  │
 │   ╠═══════════════════════════════════════════════════════════════════╣  │
 │   ║           LAYER 1 — EPISODIC MEMORY (cross-run)                 ║  │
 │   ║                                                                   ║  │
@@ -66,58 +56,39 @@ Agent prompts are assembled at runtime from 5 distinct layers, each building on 
 │   ║   │  "Unresolved: JWT tokens not rotated (2 runs ago)"      │   ║  │
 │   ║   │  "Unresolved: No CI/CD pipeline (persistent finding)"   │   ║  │
 │   ║   │  "Resolved: XSS in /api/search (fixed in last run)"    │   ║  │
-│   ║   │                                                         │   ║  │
 │   ║   │  Delta tracking between runs → what improved/regressed  │   ║  │
 │   ║   └─────────────────────────────────────────────────────────┘   ║  │
-│   ║   Status: 🆕 NEW                                                ║  │
 │   ╠═══════════════════════════════════════════════════════════════════╣  │
 │   ║           LAYER 0 — INSTITUTIONAL MEMORY (PDX Knowledge Base)   ║  │
 │   ║                                                                   ║  │
 │   ║   Methodology, lessons learned, retros, case studies, patterns  ║  │
+│   ║   + Auto-ingested from Google Drive (PDX shared folders)        ║  │
 │   ║   ┌──────────────┐     ┌──────────────┐     ┌──────────────┐   ║  │
-│   ║   │  Upload      │     │  Chunk &     │     │  pgvector    │   ║  │
-│   ║   │  (PDF/text/  │────▶│  Embed       │────▶│  Storage     │   ║  │
-│   ║   │   Git repo)  │     │  (Gemini     │     │  (Supabase)  │   ║  │
-│   ║   │              │     │   Embeddings)│     │              │   ║  │
+│   ║   │  Upload /    │     │  Chunk &     │     │  pgvector    │   ║  │
+│   ║   │  Drive Sync  │────▶│  Embed       │────▶│  Storage     │   ║  │
+│   ║   │  (PDF/Docs/  │     │  (Gemini     │     │  (Supabase)  │   ║  │
+│   ║   │   Slides)    │     │   Embeddings)│     │              │   ║  │
 │   ║   └──────────────┘     └──────────────┘     └──────────────┘   ║  │
-│   ║          │                                         │            ║  │
-│   ║          │         Semantic Retrieval               │            ║  │
-│   ║          │    ┌──────────────────────────┐          │            ║  │
-│   ║          └───▶│  Top-K chunks per agent  │◀─────────┘            ║  │
-│   ║               │  domain (cosine sim.)    │                      ║  │
-│   ║               └──────────────────────────┘                      ║  │
-│   ║   Status: 🆕 NEW                                                ║  │
+│   ║          │                    Semantic Retrieval                 ║  │
+│   ║          └──────────▶  Top-K chunks per agent domain            ║  │
 │   ╚═══════════════════════════════════════════════════════════════════╝  │
 │                                                                         │
 │   ┌─────────────────────────────────────────────────────────────────┐   │
 │   │              SYNTHESIS — Claude Opus 4.6 (1M Context)           │   │
-│   │                                                                   │   │
-│   │   Receives ALL layers simultaneously:                           │   │
 │   │                                                                   │   │
 │   │   ┌─────────┐ ┌────────┐ ┌──────────┐ ┌────────┐ ┌──────────┐ │   │
 │   │   │Layer 0  │ │Layer 1 │ │ Layer 2  │ │18 Agent│ │ FULL     │ │   │
 │   │   │PDX KB   │ │Prev.   │ │ Project  │ │Reports │ │ Codebase │ │   │
 │   │   │~6K tok  │ │Runs    │ │ Context  │ │~54K tok│ │~200K tok │ │   │
 │   │   │         │ │~10K tok│ │ ~1K tok  │ │        │ │(unfiltr.)│ │   │
-│   │   └────┬────┘ └───┬────┘ └────┬─────┘ └───┬────┘ └────┬─────┘ │   │
-│   │        │           │           │           │           │        │   │
-│   │        └───────────┴───────────┴───────────┴───────────┘        │   │
-│   │                            │                                    │   │
-│   │                   ~271K tokens total                            │   │
-│   │                   (well within 1M limit)                        │   │
-│   │                            │                                    │   │
-│   │                   ┌────────▼────────┐                           │   │
-│   │                   │  Extended       │                           │   │
-│   │                   │  Thinking       │                           │   │
-│   │                   │  (16K budget)   │                           │   │
-│   │                   └────────┬────────┘                           │   │
-│   │                            │                                    │   │
-│   │                   ┌────────▼────────┐                           │   │
-│   │                   │  The Verdict    │                           │   │
-│   │                   │  (evidence-     │                           │   │
-│   │                   │   based,        │                           │   │
-│   │                   │   verified)     │                           │   │
-│   │                   └─────────────────┘                           │   │
+│   │   └─────────┘ └────────┘ └──────────┘ └────────┘ └──────────┘ │   │
+│   │                       ~271K tokens total                        │   │
+│   │                   (well within 1M context limit)                │   │
+│   │                                                                   │   │
+│   │              Extended Thinking (16K budget)                     │   │
+│   │                            ▼                                    │   │
+│   │                    The Verdict                                   │   │
+│   │              (evidence-based, source-verified)                  │   │
 │   └─────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -125,127 +96,44 @@ Agent prompts are assembled at runtime from 5 distinct layers, each building on 
 
 ---
 
-## Before & After: What Each Agent Receives
-
-**Today — stateless:**
-```
-System prompt → Research mandate → Filtered codebase slice → "Go."
-```
-
-**After this upgrade — context-rich:**
-```
-PDX institutional knowledge (semantic retrieval, domain-matched)
-  → Previous findings for this repo ("still unresolved: no rate limiting")
-    → Project context (budget: $150K, timeline: 12 months, goal: cloud migration)
-      → System prompt + PDX role overlay ("our BAs always use INVEST + Gherkin")
-        → Research mandate (Gemini search / Claude deep expertise)
-          → Recon pre-pass (verified tech stack baseline)
-            → Persona-filtered codebase slice → "Go."
-```
-
-Agents now know PDX's standards, the client's constraints, and what was found last time — before they read a single line of code.
-
----
-
 ## Layer-by-Layer Detail
 
 ### Layer 0 — Institutional Memory (PDX Knowledge Base)
 
-**What it stores:**
-- PDX methodology docs and SDLC playbooks
-- Past project retrospectives and lessons learned
-- Industry pattern libraries curated by PDX
-- Preferred vendor and tool assessments
+The foundation of the entire stack. This is PDX's collective intelligence — methodology docs, SDLC playbooks, past project retrospectives, lessons learned, industry pattern libraries, and preferred vendor assessments — stored as vector embeddings and retrieved semantically at the start of every run.
 
-**Technology:** pgvector extension in Supabase (available as a native extension)
+At run time, each agent's domain is embedded and matched against the knowledge base. The top 5 most relevant chunks are injected into that agent's prompt before it reads a single line of code. A security agent gets PDX's past security findings and CVE patterns; the BA agent gets story templates and INVEST criteria reminders; the architect gets past migration case studies.
 
-**New DB table:**
-```sql
-CREATE TABLE knowledge_chunks (
-    id BIGSERIAL PRIMARY KEY,
-    content TEXT NOT NULL,
-    embedding VECTOR(1536),       -- Gemini text-embedding-004 (1536 dims)
-    source_doc TEXT,              -- "pdx-ba-playbook.pdf", "client-retro-2025-q4"
-    domain TEXT,                  -- "security", "architecture", "ba", "all"
-    chunk_index INTEGER,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX ON knowledge_chunks USING ivfflat (embedding vector_cosine_ops);
-```
-
-**Ingestion pipeline:**
-- `POST /api/knowledge` — accepts text or PDF body, domain tag, source name
-- Backend: chunk into 1,000-char overlapping segments → embed via Gemini text-embedding-004 → store
-- PDX team uploads retrospective docs, playbooks, and case studies via admin UI
-
-**Retrieval:**
-- At run start: embed each agent's `persona_key + domain description` → cosine similarity query → top 5 chunks
-- Rendered as `## PDX Knowledge Base\n[retrieved chunks]` block
-- ~2–3K chars per agent (negligible cost, high signal)
+**Google Drive as the primary ingestion source.** Rather than requiring manual uploads, the knowledge base syncs directly from a designated PDX Google Drive folder. New documents — Slides decks, Docs, PDFs — added to the folder are automatically chunked, embedded, and indexed overnight. PDX's institutional knowledge grows passively as the team documents their work.
 
 ---
 
 ### Layer 1 — Episodic Memory (Cross-Run Learning)
 
-**What it stores:** Previous analysis findings for the same repository
+Every analysis run is persisted. When the same repository is analysed again, agents are briefed on what was found before — specifically what was flagged, what was resolved, and what remains outstanding. Delta tracking records what improved or regressed between runs.
 
-**Source:** Existing `reports` table. Requires one new column:
-```sql
-ALTER TABLE reports ADD COLUMN repo_fingerprint TEXT; -- normalised github_url
-```
-
-**Retrieval:** On new analysis of `github.com/org/repo`:
-- Fetch last 2 completed reports for same fingerprint
-- Extract synthesis content and key findings per agent
-- Render as a `## Repository History` block injected into all agent prompts
-
-**Example injection:**
+Example injection into every agent prompt:
 ```
 ## Repository History
 Last analysed: 2026-01-15. Key unresolved findings:
-- Security: JWT tokens not rotated (flagged 2 runs ago)
-- DevOps: No CI/CD pipeline (persistent finding)
-Confirm if resolved or still present.
+- Security: JWT tokens not rotated (flagged 2 runs ago — escalating)
+- DevOps: No CI/CD pipeline (persistent across 3 runs)
+Resolved since last run:
+- XSS vulnerability in /api/search (confirmed fixed)
+Confirm current status of unresolved items.
 ```
 
-**Delta tracking — new `report_deltas` table:**
-```sql
-CREATE TABLE report_deltas (
-    id BIGSERIAL PRIMARY KEY,
-    repo_fingerprint TEXT,
-    from_report_id BIGINT,
-    to_report_id BIGINT,
-    delta_summary TEXT,     -- generated by synthesis
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-```
+Agents are no longer reporting blindly. They're auditing against a known baseline.
 
 ---
 
 ### Layer 2 — Project Context (Per-Engagement)
 
-**New `projects` table:**
-```sql
-CREATE TABLE projects (
-    id BIGSERIAL PRIMARY KEY,
-    client_id BIGINT REFERENCES clients(id),
-    name TEXT NOT NULL,
-    strategic_goals TEXT,
-    budget_range TEXT,           -- "<$75K", "$75K-$250K", "$250K+"
-    timeline TEXT,               -- "6 months", "12 months", "18-24 months"
-    key_risks TEXT,
-    stakeholders TEXT,
-    commercial_constraints TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-```
+Every engagement has a strategic context that changes what good advice looks like. A $75K budget with a 6-month timeline requires completely different recommendations than a $500K budget with an 18-month mandate. This layer captures that context in a pre-analysis brief and injects it into all 18 agents and synthesis before the fleet launches.
 
-**Frontend:** Pre-analysis brief form shown before "Analyse Repo". Fields:
-- Project name, strategic goals (textarea)
-- Budget range (dropdown: Conservative / Balanced / Transformative — maps directly to the 3 strategic paths)
-- Timeline, key risks, stakeholder priorities, commercial constraints
+Fields: project name, strategic goals, budget range (mapped to PATH A/B/C), timeline, key risks, stakeholder priorities, commercial constraints.
 
-**Example injection into all 18 agents + synthesis:**
+Example injection:
 ```
 ## Project Context (PDX Engagement Brief)
 - Client: Acme Corp (Financial Services, 500 staff)
@@ -256,197 +144,156 @@ CREATE TABLE projects (
 - Stakeholders: CTO (sponsor), VP Eng (delivery owner), Compliance (blocker)
 ```
 
----
-
-### Layer 3 — Role Identity (Enhancement to Existing)
-
-**Current state:** `PERSONA_CONFIGS` hardcoded in `agent_engine.py`
-
-**Enhancement:** Add a `pdx_overlay` field per persona — PDX-specific guidance that sits above the generic role prompt. Stored in the existing `personas` DB table and retrieved at runtime.
-
-**Example overlay for BA:**
-```
-PDX BA standard: all stories use INVEST criteria. Acceptance criteria always in
-Gherkin (Given/When/Then). We never write stories without a measurable success
-metric. Reference PDX BA Playbook v3.
-```
+**This layer is also where live integrations feed in.** Rather than filling the brief manually, PDX can connect the tool to the systems where client context already exists.
 
 ---
 
-### Layer 4 — Working Memory (Already Built)
+### Layer 3 — Role Identity (PDX Overlay)
 
-No changes. This is the existing codebase ingestion + recon pre-pass + persona-filtered context slice pipeline.
+Each of the 18 agent personas gains a PDX-specific overlay — a short block of PDX's own standards and preferences that sits above the generic role prompt. This means agents don't just behave like a generic BA or Security Engineer; they behave like a PDX BA or a PDX Security Engineer.
+
+Example overlay for the BA persona:
+```
+PDX BA standard: all stories use INVEST criteria. Acceptance criteria always
+in Gherkin (Given/When/Then). We never write stories without a measurable
+success metric. Reference PDX BA Playbook v3.
+```
+
+---
+
+### Layer 4 — Working Memory (Per-Run Codebase)
+
+The existing codebase ingestion pipeline: GitHub API ingestion, Gemini Flash reconnaissance pre-pass, and persona-aware context filtering. No changes to this layer.
 
 ---
 
 ## The Opus 4.6 Synthesis Upgrade
 
-The single highest-impact change. Currently the synthesis agent (The Verdict) reads 18 agent summaries and reasons from those alone — it never sees the actual codebase.
+The single highest-impact change in this architecture. Currently, The Verdict reads 18 agent summaries and reasons from those alone — it never sees the actual codebase.
 
-With Opus 4.6's 1M context window, synthesis receives everything:
+With Claude Opus 4.6's 1M context window, synthesis receives everything simultaneously:
 
-| Component | Tokens |
-|-----------|--------|
-| Layer 0 — PDX Knowledge Base chunks | ~6K |
-| Layer 1 — Previous analysis runs | ~10K |
-| Layer 2 — Project context brief | ~1K |
-| Layer 3 — Synthesis identity prompt | ~2K |
+| Component | Approx. Tokens |
+|-----------|---------------|
+| PDX Knowledge Base chunks (Layer 0) | ~6K |
+| Previous analysis runs (Layer 1) | ~10K |
+| Project context brief (Layer 2) | ~1K |
+| Synthesis identity prompt (Layer 3) | ~2K |
 | All 18 agent reports | ~54K |
 | Full unfiltered codebase | ~200K |
 | **Total** | **~273K (27% of 1M budget)** |
 
-**What this unlocks:**
+What this unlocks:
 
-- **Verify agent claims against source code** — "The security agent flagged JWT issues, and I can confirm: `auth.py` line 47 uses HS256 with a hardcoded secret"
-- **Catch things all 18 agents missed** — synthesis sees the full picture, not filtered slices
-- **Track regression** — "This vulnerability was flagged in January and remains unfixed"
-- **Tailor to budget** — "Given the $150K budget and 12-month timeline, PATH B is the only viable option"
+- **Source code verification** — "The security agent flagged JWT issues, confirmed: `auth.py` line 47 uses HS256 with a hardcoded secret"
+- **Blind spot detection** — synthesis sees the complete picture, not persona-filtered slices
+- **Regression tracking** — "This vulnerability was flagged in January and remains unfixed across 3 runs"
+- **Budget-aware recommendations** — "Given the $150K budget and 12-month timeline, PATH B is the only viable option — PATH C recommendations from the architect are out of scope"
 
-**Model routing:**
-```python
-SYNTHESIS_MODEL = "claude-opus-4-6"           # 1M context, highest reasoning
-PERSONA_MODEL_ANTHROPIC = "claude-sonnet-4-6"  # Agents stay on Sonnet (cost control)
-```
+The 18 parallel agents remain on Claude Sonnet 4.6 for cost control. Only synthesis is upgraded to Opus.
 
 ---
 
-## Implementation Plan
+## Live Integration Layer
 
-### Phase 1 — Project Context Layer
-**Effort:** 6–8 hrs (AI-assisted) | **Priority:** Highest ROI, simplest to build
+Beyond the 5-layer memory stack, the most powerful upgrade is connecting the engine to the tools where client intelligence already lives. Rather than agents reasoning from the codebase alone, they can be briefed with real project history before analysis begins.
 
-| Task | Hours |
-|------|-------|
-| Supabase `projects` table + FastAPI endpoints | 2 |
-| Pre-analysis brief form (frontend) | 2–3 |
-| Prompt injection into `run_agent_fleet()` | 1–2 |
-| End-to-end testing + prompt output verification | 1 |
+### Google Workspace (Drive, Docs, Gmail)
 
-### Phase 2 — Episodic Memory
-**Effort:** 8–10 hrs (AI-assisted) | **Priority:** High ROI, builds on Phase 1
+Google Drive is the natural home for PDX's Layer 0 knowledge base. A designated `PDX / SDLC Engine / Knowledge Base` shared Drive folder is monitored for new content. When a new doc, deck, or PDF is added, it is automatically chunked, embedded via Gemini, and indexed in Supabase pgvector. PDX's institutional memory grows without any manual curation step.
 
-| Task | Hours |
-|------|-------|
-| Repo fingerprinting + last-N query + retrieval | 3 |
-| Format previous findings as context block | 2 |
-| `report_deltas` table + delta generation | 2–3 |
-| Frontend: history diff view | 1–2 |
+For client engagements, a per-client Drive folder can be linked at brief time. The engine reads the folder — discovery call notes, existing architecture docs, previous vendor assessments, contracts, scope documents — and surfaces the most relevant content into Layer 2 as project context. Agents arrive at the codebase already familiar with what the client said they care about.
 
-### Phase 3 — PDX Knowledge Base
-**Effort:** 12–16 hrs (AI-assisted) | **Priority:** Most complex, highest long-term value
+Gmail integration surfaces the most recent email threads related to the engagement — particularly useful for picking up on concerns raised in email that never made it into a brief document. Key phrases from stakeholder emails ("we can't migrate the payment module before Q3" or "the board is worried about GDPR compliance") become first-class context that shapes every agent's recommendations.
 
-| Task | Hours |
-|------|-------|
-| Enable pgvector, create `knowledge_chunks` table + IVFFlat index | 1–2 |
-| Ingestion pipeline (chunk → embed → store) | 3–4 |
-| Semantic retrieval per agent domain | 2–3 |
-| Admin UI: upload, browse, delete knowledge docs | 3–4 |
-| Auto-extract hook: chunk synthesis findings into KB post-analysis | 2–3 |
+### Slack
 
-### Phase 4 — Opus 4.6 Synthesis Upgrade
-**Effort:** 4–6 hrs (AI-assisted) | **Priority:** Quick win, dramatic quality improvement
+Slack is where the real project conversation happens. Connecting the engine to a designated client Slack channel (or a PDX internal channel) means agents can be briefed on the last 30 days of conversation before analysis.
 
-| Task | Hours |
-|------|-------|
-| Switch synthesis model, assemble all 5 layers into single prompt | 2 |
-| Update synthesis prompt for source code verification + evidence-based claims | 1–2 |
-| Token count verification + cost validation + output quality check | 1–2 |
+Practically this means: concerns raised in a stand-up ("the auth service keeps falling over on Fridays"), decisions made in a thread ("we agreed to drop the mobile app scope"), and blockers mentioned in passing ("procurement won't approve AWS until the security audit is done") all flow into the project context layer. The security agent will know about the auth service problem before it reads the code. The cost analyst will know procurement is blocked before recommending a cloud migration.
 
-### Recommended Build Order
+A post-analysis Slack integration completes the loop: when synthesis finishes, The Verdict summary is automatically posted to the channel, tagged to relevant engineers.
 
-```
-Week 1, Days 1–2:  Phase 1 — Project Context        [highest ROI, simplest]
-Week 1, Days 3–5:  Phase 2 — Episodic Memory         [high ROI, builds on Phase 1]
-Week 2, Days 1–4:  Phase 3 — PDX Knowledge Base      [most complex, highest long-term value]
-Week 2, Day 5:     Phase 4 — Opus 4.6 Synthesis      [quick win, dramatic quality boost]
-─────────────────────────────────────────────────────────────────────────────────
-TOTAL:             ~30–40 hrs AI-assisted development (~1 focused week)
-```
+### Email (General / Outlook)
 
-> All estimates assume AI-assisted development (Claude Code / Cursor / Copilot). Pure manual development would be approximately 3× these figures.
+For clients not on Google Workspace, direct IMAP/SMTP or Microsoft Graph API integration achieves the same result. Relevant email threads are parsed and summarised into the project context layer. The engine can also send analysis summaries directly to stakeholder inboxes at completion — no need for the client to log into the tool.
+
+### HubSpot
+
+HubSpot is where PDX's commercial relationship with the client lives — deal stage, contact history, previous engagement notes, proposal values, and any notes from sales or account management calls. This is high-signal context for the analysis.
+
+A HubSpot-connected brief automatically pulls:
+- **Deal notes** — what was promised in the sales process, client pain points articulated by the account team
+- **Contact roles** — who the economic buyer is vs. the technical decision-maker vs. the day-to-day contact
+- **Previous engagements** — if PDX has worked with this client before, historical deal notes surface as context
+- **Opportunity value** — a $2M deal gets different depth of analysis than a $50K discovery
+
+The compliance and cost agents in particular benefit from HubSpot data: knowing the commercial constraints going in produces far more grounded recommendations.
+
+HubSpot also becomes an output target. When analysis completes, a summary note can be pushed back to the deal record — keeping the CRM current without manual data entry.
 
 ---
 
-## Files to Modify
+## What Each Agent Actually Receives
 
-| File | Changes |
-|------|---------|
-| `agent_engine.py` | Layer 0 retrieval, Layer 1 episodic injection, Layer 2 project context injection, synthesis model upgrade, full codebase passed to synthesis |
-| `database.py` | New tables: `projects`, `knowledge_chunks`, `report_deltas`. New functions: `save_project`, `get_project`, `get_knowledge_chunks_for_domain`, `get_previous_reports_for_repo` |
-| `main.py` | New endpoints: `GET/POST /api/projects`, `GET/POST /api/knowledge`, `GET /api/reports/{id}/diff` |
-| `static/index.html` | Pre-analysis brief form, Knowledge Base admin tab |
-| `static/script.js` | Brief form state, project context submission, KB admin UI |
-| `requirements.txt` | No new dependencies (pgvector via Supabase REST, embeddings via existing Gemini client) |
+Every agent in the fleet — before reading the codebase — receives a structured briefing assembled from all connected sources:
+
+```
+[PDX Knowledge Base] Semantically matched methodology chunks + past project patterns
+[Repository History] Previous findings, deltas, unresolved items for this repo
+[Project Context]    Client brief + Drive docs + Gmail threads + Slack summary + HubSpot notes
+[Role Identity]      Agent system prompt + PDX role overlay (our standards, our style)
+[Research Mandate]   Gemini: live search grounding / Claude: deep expertise references
+[Recon Pre-pass]     Verified tech stack baseline (language, framework, architecture)
+[Codebase Slice]     Persona-filtered, relevance-scored codebase extract
+```
+
+The difference is not incremental. An agent briefed this way doesn't start with a blank slate — it starts with institutional knowledge, client history, previous findings, and strategic constraints already loaded. Analysis goes straight to depth.
 
 ---
 
-## Cost Impact Per Analysis Run
+## Build Effort (AI-Assisted Development)
 
-| Component | Current | New | Notes |
-|-----------|---------|-----|-------|
-| 18 parallel agents (Sonnet 4.6) | ~$2–4 | ~$2–4 | Unchanged — agents stay on Sonnet |
-| Synthesis (Sonnet → Opus 4.6) | ~$0.50–1 | ~$3–8 | Opus pricing + full codebase context |
-| Knowledge base retrieval | — | ~$0.01 | Embedding query is negligible |
-| Episodic memory retrieval | — | ~$0.00 | DB query only, no AI cost |
-| **Total per run** | **~$2–5** | **~$5–13** | Still trivial vs. consultant day rate |
+| Phase | Deliverable | Est. Hours |
+|-------|-------------|-----------|
+| 1 | Project Context Layer (DB + brief form + prompt injection) | 6–8 hrs |
+| 2 | Episodic Memory (cross-run fingerprinting + delta tracking) | 8–10 hrs |
+| 3 | PDX Knowledge Base (pgvector + embeddings + admin UI) | 12–16 hrs |
+| 4 | Opus 4.6 Synthesis Upgrade (model swap + full codebase) | 4–6 hrs |
+| 5 | Google Workspace Integration (Drive sync + Gmail + Docs) | 10–14 hrs |
+| 6 | Slack Integration (channel reader + post-analysis push) | 6–8 hrs |
+| 7 | HubSpot Integration (deal context pull + note push) | 8–10 hrs |
+| **Total** | **Full v2 Architecture** | **54–72 hrs (~2 weeks)** |
+
+> All estimates assume AI-assisted development (Claude Code / Cursor / Copilot). Pure manual development is approximately 3× these figures.
+
+---
+
+## Per-Run API Cost
+
+| Component | Cost | Notes |
+|-----------|------|-------|
+| 18 parallel agents (Sonnet 4.6) | ~$2–4 | Unchanged |
+| Synthesis (Opus 4.6 + full codebase) | ~$3–8 | Significant upgrade in quality |
+| Knowledge base retrieval (embeddings) | ~$0.01 | Negligible |
+| Integration pulls (Drive, Slack, HubSpot) | ~$0.00 | API calls only, no AI cost |
+| **Total per run** | **~$5–12** | Trivial vs. consultant day rate |
 
 ---
 
 ## Long-Term Strategic Value
 
-1. **Institutional learning** — PDX gets smarter with every engagement. Patterns discovered in Project A automatically inform analysis of Project B.
+1. **Institutional learning** — PDX gets smarter with every engagement. Patterns from Project A automatically inform Project B. The knowledge base compounds.
 
-2. **Regression tracking** — "We flagged this 3 months ago. It's still not fixed. Severity: escalated."
+2. **Regression tracking** — "We flagged this 3 months ago. It's still not fixed. Severity: escalated." Clients can't pretend findings were addressed.
 
-3. **Client-aware recommendations** — Agents stop recommending $500K transformations to clients with $75K budgets.
+3. **Client-aware recommendations** — Agents can't recommend $500K transformations to a client with a $75K budget and a Q3 deadline when that context is baked in from the start.
 
-4. **Evidence-based synthesis** — The Verdict stops being "18 opinions summarised" and becomes "18 opinions verified against source code."
+4. **Evidence-based synthesis** — The Verdict stops being "18 opinions summarised" and becomes "18 opinions verified against source code, client history, and PDX precedent."
 
-5. **Competitive moat** — No other tool has layered institutional memory. This is the difference between a generic AI scanner and a PDX-powered discovery practice.
+5. **Whole-client intelligence** — Analysis is no longer bounded by what's in the codebase. It reflects everything PDX knows about the client from every system they use.
 
----
-
-## New DB Schema Summary
-
-```sql
--- Layer 0: Institutional Memory
-CREATE TABLE knowledge_chunks (
-    id BIGSERIAL PRIMARY KEY,
-    content TEXT NOT NULL,
-    embedding VECTOR(1536),
-    source_doc TEXT,
-    domain TEXT,
-    chunk_index INTEGER,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX ON knowledge_chunks USING ivfflat (embedding vector_cosine_ops);
-
--- Layer 1: Episodic Memory (additive to existing reports table)
-ALTER TABLE reports ADD COLUMN repo_fingerprint TEXT;
-
-CREATE TABLE report_deltas (
-    id BIGSERIAL PRIMARY KEY,
-    repo_fingerprint TEXT,
-    from_report_id BIGINT,
-    to_report_id BIGINT,
-    delta_summary TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Layer 2: Project Context
-CREATE TABLE projects (
-    id BIGSERIAL PRIMARY KEY,
-    client_id BIGINT REFERENCES clients(id),
-    name TEXT NOT NULL,
-    strategic_goals TEXT,
-    budget_range TEXT,
-    timeline TEXT,
-    key_risks TEXT,
-    stakeholders TEXT,
-    commercial_constraints TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-```
+6. **Competitive moat** — No other tool has layered institutional memory, live workspace integrations, and an 18-agent specialist fleet. This is the difference between a generic AI scanner and a PDX-powered discovery practice.
 
 ---
 
