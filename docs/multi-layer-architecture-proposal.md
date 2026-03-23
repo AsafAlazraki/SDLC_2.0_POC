@@ -149,7 +149,7 @@ Agents now know PDX's standards, the client's constraints, and what was found la
 
 ## Layer-by-Layer Detail
 
-### Layer 0 — Institutional Memory (PDX Knowledge Base)
+### Layer 0 — Institutional Memory (PDX Knowledge Base) 
 
 **What it stores:**
 - PDX methodology docs and SDLC playbooks
@@ -157,7 +157,7 @@ Agents now know PDX's standards, the client's constraints, and what was found la
 - Industry pattern libraries curated by PDX
 - Preferred vendor and tool assessments
 
-**Technology:** pgvector extension in Supabase (available as a native extension)
+**Technology:** pgvector extension in Supabase (available as a native extension) & via direct connection to Google Workspace
 
 **New DB table:**
 ```sql
