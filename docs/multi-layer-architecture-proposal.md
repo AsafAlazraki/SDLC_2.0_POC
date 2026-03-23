@@ -301,4 +301,3 @@ The difference is not incremental. An agent briefed this way doesn't start with 
 
 ---
 
-*SDLC Discovery Engine — PDX Engineering | https://claude.ai/code/session_01UAXouhEGComH7nBzkNgviF*
