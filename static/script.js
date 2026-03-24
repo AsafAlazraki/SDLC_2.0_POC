@@ -1065,24 +1065,25 @@ document.addEventListener('DOMContentLoaded', () => {
     const folderUpload = document.getElementById('folder-upload');
     const fileListEl = document.getElementById('file-list');
 
-    // Show selected file count when folder is chosen
+    // Show selected file names when docs are chosen
     folderUpload?.addEventListener('change', () => {
-        const count = folderUpload.files?.length || 0;
-        if (fileListEl) {
-            fileListEl.textContent = count > 0 ? `${count} file(s) selected` : '';
-        }
+        const files = folderUpload.files;
+        if (!fileListEl) return;
+        if (!files || files.length === 0) { fileListEl.textContent = ''; return; }
+        const names = Array.from(files).map(f => `📄 ${f.name}`).join('<br>');
+        fileListEl.innerHTML = names;
     });
 
     analyzeBtn?.addEventListener('click', async () => {
         const payloadText = assetInput.value.trim();
         const uploadedFiles = folderUpload?.files;
         if(!payloadText && (!uploadedFiles || uploadedFiles.length === 0)) {
-            alert("Please provide input text or upload files.");
+            alert("Please upload documentation files or paste text.");
             return;
         }
 
         analyzeBtn.disabled = true;
-        analyzeBtn.innerHTML = 'Launching Fleet... <span class="loader" style="display:inline-block;"></span>';
+        analyzeBtn.innerHTML = 'Processing Documentation... <span class="loader" style="display:inline-block;"></span>';
 
         resetReport();
         document.querySelector('[data-target="report"]').click();
@@ -1122,7 +1123,7 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error("File analysis error", e);
         } finally {
             analyzeBtn.disabled = false;
-            analyzeBtn.textContent = 'Run Legacy Analysis';
+            analyzeBtn.textContent = 'Analyse with Documentation';
         }
     });
 

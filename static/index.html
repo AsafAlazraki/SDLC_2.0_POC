@@ -130,24 +130,25 @@
                         </details>
 
                         <div class="divider-line" style="border-bottom: 1px solid var(--border-subtle); margin: 20px 0; position: relative;">
-                            <span style="position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: rgba(30,30,45,0.9); padding: 0 16px; color: var(--text-muted); font-size: 0.85rem;">OR paste / upload files</span>
+                            <span style="position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: rgba(30,30,45,0.9); padding: 0 16px; color: var(--text-muted); font-size: 0.85rem;">OR upload documentation</span>
                         </div>
-                        
+
                         <div class="upload-zone" id="drop-zone" style="border: 2px dashed var(--border-subtle); padding: 30px; border-radius: 12px; text-align: center; margin-bottom: 20px; background: rgba(0,0,0,0.2);">
-                            <span style="font-size: 2em; margin-bottom: 15px; display: block;">📂</span>
-                            <h4>Drag & Drop Legacy Folder Here</h4>
-                            <p class="muted-text" style="margin-top: 5px;">or</p>
-                            <label for="folder-upload" class="secondary-btn" style="display: inline-block; margin-top: 15px; cursor: pointer;">Browse Folder</label>
-                            <input type="file" id="folder-upload" webkitdirectory directory multiple style="display: none;">
+                            <span style="font-size: 2em; margin-bottom: 15px; display: block;">📄</span>
+                            <h4>Upload Project Documentation</h4>
+                            <p class="muted-text" style="margin-top: 5px; font-size: 0.85rem;">Architecture docs, requirements, API specs, process docs</p>
+                            <p class="muted-text" style="font-size: 0.78rem; margin-top: 4px;">PDF · DOCX · TXT · MD · CSV</p>
+                            <label for="folder-upload" class="secondary-btn" style="display: inline-block; margin-top: 15px; cursor: pointer;">Browse Files</label>
+                            <input type="file" id="folder-upload" multiple accept=".pdf,.docx,.doc,.txt,.md,.csv,.rtf" style="display: none;">
                             <div id="file-list" class="muted-text text-sm" style="margin-top: 15px; max-height: 100px; overflow-y: auto; text-align: left;"></div>
                         </div>
 
                         <div class="textarea-wrapper">
-                            <textarea id="asset-input" placeholder="Alternatively, paste legacy code or schema dump here..."></textarea>
+                            <textarea id="asset-input" placeholder="Alternatively, paste documentation or notes here..."></textarea>
                         </div>
                         <div class="actions">
                             <button id="analyze-btn" class="secondary-btn" style="padding: 14px 28px;">
-                                Run Legacy Analysis
+                                Analyse with Documentation
                                 <span class="loader" style="display:none;"></span>
                             </button>
                         </div>

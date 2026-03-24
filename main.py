@@ -27,6 +27,19 @@ import anthropic as anthropic_sdk
 
 import agent_engine
 
+# Optional document extraction libraries
+try:
+    import pypdf
+    HAS_PYPDF = True
+except ImportError:
+    HAS_PYPDF = False
+
+try:
+    from docx import Document as DocxDocument
+    HAS_DOCX = True
+except ImportError:
+    HAS_DOCX = False
+
 # ─────────────────────────────────────────────
 # Pydantic Models
 # ─────────────────────────────────────────────
@@ -748,22 +761,55 @@ async def analyze_files(
     file_contents = []
     if files:
         for file in files:
-            if file.filename:
-                try:
-                    content = await file.read()
-                    filename_lower = file.filename.lower()
-                    ext = '.' + filename_lower.rsplit('.', 1)[-1] if '.' in filename_lower else ''
-                    if ext in agent_engine.SKIP_EXTENSIONS:
-                        continue
+            if not file.filename:
+                continue
+            try:
+                content = await file.read()
+                filename_lower = file.filename.lower()
+                ext = '.' + filename_lower.rsplit('.', 1)[-1] if '.' in filename_lower else ''
+
+                # PDF extraction
+                if ext == '.pdf':
+                    if HAS_PYPDF:
+                        try:
+                            import io
+                            reader = pypdf.PdfReader(io.BytesIO(content))
+                            pages_text = []
+                            for page in reader.pages:
+                                pages_text.append(page.extract_text() or '')
+                            decoded = '\n'.join(pages_text)
+                        except Exception:
+                            continue
+                    else:
+                        continue  # skip PDFs if pypdf not installed
+
+                # DOCX extraction
+                elif ext in ('.docx', '.doc'):
+                    if HAS_DOCX and ext == '.docx':
+                        try:
+                            import io
+                            doc = DocxDocument(io.BytesIO(content))
+                            decoded = '\n'.join(p.text for p in doc.paragraphs)
+                        except Exception:
+                            continue
+                    else:
+                        continue  # skip unsupported doc formats
+
+                # Plain text / markdown / CSV
+                elif ext in ('.txt', '.md', '.csv', '.rtf'):
                     try:
                         decoded = content.decode('utf-8', errors='replace')
-                        if '\x00' in decoded[:500]:
-                            continue
-                        file_contents.append(f"\n{'='*60}\nFILE: {file.filename}\n{'='*60}\n{decoded}\n")
                     except Exception:
                         continue
-                except Exception:
+
+                # Skip everything else
+                else:
                     continue
+
+                if decoded.strip():
+                    file_contents.append(f"\n{'='*60}\nDOCUMENT: {file.filename}\n{'='*60}\n{decoded}\n")
+            except Exception:
+                continue
 
     code_context = ""
     if text_context:
