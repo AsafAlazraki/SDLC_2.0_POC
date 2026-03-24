@@ -8,6 +8,7 @@ import httpx
 import json
 import re
 import logging
+from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, AsyncGenerator
 from google import genai
 from google.genai import types
