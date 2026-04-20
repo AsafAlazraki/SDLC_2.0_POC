@@ -460,6 +460,17 @@ const state = {
 - Agents told to "tailor all recommendations to fit these constraints" and "flag anything that exceeds them"
 - PATH A/B/C recommendations become budget-scoped rather than generic
 
+### 16. Image Vision via Gemini (Phase 8b)
+- **Vision extractor**: `extract_image_with_vision(payload, mime, *, gemini_api_key, filename)` in `materials_extractor.py` runs Gemini 2.0 Flash on uploaded images (PNG/JPG/JPEG/GIF/WEBP/BMP) and returns a structured markdown summary with 5 sections: What this image is, Visible content, Inferred purpose, Notable details, Open questions.
+- **Async dispatch**: New `extract_text_async(filename, mime, payload, *, gemini_api_key)` is the public async entry point. Routes images to vision when key is present; delegates to sync `extract_text()` for everything else.
+- **SVG handling**: SVGs are routed to the text decoder (XML), NOT vision — Gemini-vision rejects them and the source text is more useful anyway.
+- **Hard cap**: `MAX_IMAGE_BYTES_FOR_VISION = 4 * 1024 * 1024` — oversized images skip vision and fall back to metadata-only.
+- **Graceful degradation**: No key → metadata-only with `note: "vision extraction failed"`. SDK missing → metadata-only. API error (rate limit, bad key, quota) → captured in `meta.error`, no crash, no empty payload write.
+- **Wiring**: `main.py /api/projects/{id}/materials/upload` uses `extract_text_async(..., gemini_api_key=ENV_GEMINI_KEY)`. Sync callers (tests, batch tools) keep using `extract_text()` and get the metadata-only image fallback.
+- **Cost**: Vision call is one Gemini 2.0 Flash request per image, ~$0.0001 per typical wireframe/screenshot. Effectively free.
+- **Vision summary as agent context**: Output text starts with `[Vision summary of image: <filename> — <mime>]\n\n<sections>` so agents reading the materials block see provenance and can cite the image by name.
+- **Tests**: 3 dedicated tests in `test_materials_extractor.py` — sync metadata-only fallback, async without key, SVG routing.
+
 ### 15. Situational Opus Escalation (Phase 8)
 - **Decision function**: `should_escalate_to_opus(probe_results)` in `agent_engine.py` returns `(escalate: bool, reason: str)` based on confidence-probe payload.
 - **Three triggers** (whichever fires first):
@@ -581,7 +592,7 @@ The system implements a layered memory architecture inspired by the v2 Architect
 | ~~Report diffing~~ | ~~High~~ | ✅ **Partially done** — agents now receive previous findings and track deltas in risk register/tech debt docs |
 | Inter-agent communication mid-run | High | **Decided** — agents can flag critical findings to each other mid-run when the latency cost is worth it. Not yet implemented. |
 | Tier 2 artefact generation | High | **Decided** — conversational "build that" command generating code/config/docs into local project folders. Not yet implemented. |
-| Omnivorous input pipeline | Medium | **Decided** — PDFs, images (vision), spreadsheets, video/audio transcripts, zips, .osp files, code folders. Partial support exists; full pipeline not yet built. |
+| Omnivorous input pipeline | Medium | **Mostly done** — PDFs (pypdf), DOCX (python-docx), .oap/zip with manifest extraction, code/text decoded as UTF-8, images via Gemini-vision summaries (Phase 8b). Audio/video transcripts still TODO. Spreadsheets handled as text/CSV. |
 | Situational Opus escalation | Medium | ✅ **Done (Phase 8)** — `should_escalate_to_opus()` triggers Opus 4.6 with 16K thinking / 12K output when ≥4 agents at low confidence, ≥30% of fleet at low confidence, or zero high-confidence anchors. New SSE event `synthesis_escalated`. Frontend shows banner on synthesis card. |
 | Scheduled domain research (Layer 5) | Medium | **Deferred** — run-time research via Gemini search grounding sufficient for now. Revisit when project volume grows. |
 | Semantic search (pgvector) | Low | **Deferred** — brute-force materials injection works well up to ~20 docs. Trigger: when Layer 5 research or materials exceed 50 entries per domain. |

@@ -12,6 +12,22 @@ CLAUDE.md is the **architecture spec** — what the system *is* now. This file i
 
 ## Architecture Learnings
 
+### Image vision: cheap, structured, async-only (Phase 8b)
+
+Adding image vision to the materials pipeline turned out to be 90% plumbing and 10% prompt engineering.
+
+1. **Async dispatch only.** Vision is the only async branch in the extractor. Rather than turn the whole module async, I added `extract_text_async()` as a sibling that delegates to sync `extract_text()` for everything except images. Existing sync callers (tests, batch tools, kickoff_pack) didn't need changes.
+
+2. **Structured prompt > free-form description.** First draft asked Gemini to "describe this image." Output was inconsistent — sometimes a paragraph, sometimes a list, sometimes hallucinated context. Switched to a structured 5-section prompt (What this is / Visible content / Inferred purpose / Notable details / Open questions) and output became reliable across mixed inputs (wireframes, ER diagrams, screenshots, error dialogs).
+
+3. **SVGs are not images.** Gemini-vision rejects SVGs because they're XML. I added a special-case route to the text decoder for `.svg` / `image/svg+xml`. The XML source is also more useful than a vision summary would be — agents can read the actual element tree.
+
+4. **Graceful degradation in 3 dimensions.** No Gemini key → metadata-only. SDK missing → metadata-only. API error → metadata-only with error captured. Verified during dev when our test key got auto-flagged as leaked — extractor returned cleanly, no crash, error in metadata. The upload endpoint still saved the row.
+
+5. **Provenance header on the summary.** Agents downstream see `[Vision summary of image: login_wireframe.png — image/png]` before the actual text. They can cite the image by filename in their reports. Without this, the summary read as if it came from a person, not an image — confusing context.
+
+Cost: ~$0.0001 per image at Flash rates. Effectively free. The biggest cost is latency — adds ~2-3s per image to the upload endpoint.
+
 ### Situational Opus escalation (Phase 8)
 
 We had a "decided but not built" item to escalate synthesis from Sonnet to Opus when confidence was low. Built it. Three lessons:

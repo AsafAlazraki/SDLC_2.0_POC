@@ -14,17 +14,21 @@ Special handling:
   - .pdf via pypdf  (soft-imported; missing dep = clean error message).
   - .docx via python-docx (same).
   - Code / text / markup: decoded as UTF-8 with replacement.
-  - Images: marked binary with metadata only (Phase 2.5 will optionally
-    add Gemini-vision summaries; gated on env GEMINI_API_KEY).
+  - Images: Gemini 2.0 Flash vision generates a structured text summary when
+    GEMINI_API_KEY is set. Without a key, we fall back to metadata-only.
 
 Hard cap: MAX_TEXT_BYTES per extracted blob to protect prompt budget.
 """
 
 from __future__ import annotations
+import base64
 import io
+import logging
 import os
 import zipfile
 from typing import Tuple, Dict, Any, List
+
+logger = logging.getLogger(__name__)
 
 # Optional libraries — soft-imported so missing deps fail gracefully per file.
 try:
@@ -37,10 +41,119 @@ try:
 except ImportError:
     docx_lib = None  # type: ignore
 
+# Gemini SDK is already a hard dep of the engine; treat it as optional here so
+# materials_extractor stays usable in test contexts that mock it out.
+try:
+    from google import genai as _genai  # type: ignore
+    from google.genai import types as _genai_types  # type: ignore
+except ImportError:
+    _genai = None  # type: ignore
+    _genai_types = None  # type: ignore
+
 
 MAX_TEXT_BYTES = 200_000        # per-material body cap (~50K tokens)
 MAX_ZIP_FILES = 60              # cap how many entries we crack open inside a zip
 MAX_ZIP_BYTES_PER_ENTRY = 80_000
+
+# Vision extraction caps. Gemini 2.0 Flash accepts up to ~7MB per image but
+# real screenshots/wireframes are typically <2MB. We cap at 4MB to stop a
+# single oversized PNG from chewing the entire upload budget.
+MAX_IMAGE_BYTES_FOR_VISION = 4 * 1024 * 1024
+VISION_MODEL = "gemini-2.0-flash"
+
+# Mapping of file extension → MIME type the Gemini SDK expects. SVGs are XML
+# and we let the text path handle them — Gemini-vision rejects them anyway.
+IMAGE_MIME_MAP = {
+    ".png":  "image/png",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif":  "image/gif",
+    ".webp": "image/webp",
+    ".bmp":  "image/bmp",
+}
+
+# The vision prompt is intentionally structured. We want consistent fields the
+# agents can rely on across mixed inputs (wireframes, screenshots, diagrams,
+# whiteboard photos, ER diagrams, log captures...).
+_VISION_PROMPT = """You are a visual analyst preparing this image for a fleet of software analysis agents who CANNOT see images. Your job is to convert it into structured text they can reason against.
+
+Produce the following sections, omitting any that genuinely don't apply:
+
+### What this image is
+One short sentence: type of artefact (UI mockup, architecture diagram, ER diagram, screenshot of running app, whiteboard photo, code screenshot, log capture, error dialog, photograph, etc.).
+
+### Visible content
+A faithful, exhaustive description of what is in the image. For UI screenshots/wireframes: list every visible label, button, field, menu item, and their layout. For diagrams: list every node and every labelled edge/arrow. For text-bearing images (logs, code, error dialogs): transcribe the text verbatim where readable.
+
+### Inferred purpose / context
+What this artefact is trying to communicate, and the kind of system or workflow it implies.
+
+### Notable details
+Anything that stands out: error states, badges, version numbers, dates, brand marks, unusual layouts, accessibility concerns, anomalies.
+
+### Open questions
+2-3 things an analyst would need to ask the human to fully understand this image.
+
+Be concise but complete. Do NOT speculate beyond what is visible. If the image is unreadable, blurry, or empty, say so plainly."""
+
+
+async def extract_image_with_vision(
+    payload: bytes,
+    mime: str,
+    *,
+    gemini_api_key: str,
+    filename: str = "",
+) -> Tuple[str, Dict[str, Any]]:
+    """Run Gemini-vision on an image and return (markdown_summary, metadata).
+
+    Pure-async, never raises. Returns ("", {"error": ...}) on any failure so
+    the caller can attach the metadata-only fallback path.
+
+    Caller responsibility: only invoke when GEMINI_API_KEY is available and
+    the image is under MAX_IMAGE_BYTES_FOR_VISION.
+    """
+    meta: Dict[str, Any] = {"vision_model": VISION_MODEL, "image_bytes": len(payload)}
+
+    if not gemini_api_key:
+        meta["error"] = "no Gemini API key — image kept as metadata only"
+        return ("", meta)
+    if _genai is None or _genai_types is None:
+        meta["error"] = "google-genai SDK not installed"
+        return ("", meta)
+    if len(payload) > MAX_IMAGE_BYTES_FOR_VISION:
+        meta["error"] = f"image too large ({len(payload):,} bytes > {MAX_IMAGE_BYTES_FOR_VISION:,})"
+        return ("", meta)
+
+    try:
+        client = _genai.Client(api_key=gemini_api_key)
+        image_part = _genai_types.Part.from_bytes(data=payload, mime_type=mime)
+        response = await client.aio.models.generate_content(
+            model=VISION_MODEL,
+            contents=[image_part, _VISION_PROMPT],
+            config=_genai_types.GenerateContentConfig(temperature=0.2),
+        )
+        summary = (response.text or "").strip()
+        if not summary:
+            meta["error"] = "vision returned empty response"
+            return ("", meta)
+        meta["extracted"] = "image_vision"
+        meta["summary_chars"] = len(summary)
+        # Wrap the summary so the agent prompt makes the provenance obvious.
+        header = f"[Vision summary of image: {filename or '(unnamed)'} — {mime}]"
+        return (f"{header}\n\n{summary}", meta)
+    except Exception as e:
+        logger.warning(f"Vision extraction failed for {filename}: {e}")
+        meta["error"] = f"vision call failed: {e}"
+        return ("", meta)
+
+
+def _guess_image_mime(filename: str, mime: str) -> str:
+    """Return the cleanest MIME for an image — prefer the supplied one, else
+    derive from the extension. Defaults to image/png as Gemini's safest bet."""
+    if mime and mime.lower().startswith("image/") and mime.lower() != "image/svg+xml":
+        return mime.lower()
+    ext = os.path.splitext(filename or "")[1].lower()
+    return IMAGE_MIME_MAP.get(ext, "image/png")
 
 TEXT_EXTS = {
     ".txt", ".md", ".markdown", ".rst", ".json", ".yaml", ".yml", ".xml",
@@ -224,9 +337,12 @@ def extract_text(filename: str, mime: str, payload: bytes) -> Tuple[str, Dict[st
         return _extract_zip(payload, meta, label="OAP")
     if name.endswith(".zip") or mime_l in ("application/zip", "application/x-zip-compressed"):
         return _extract_zip(payload, meta, label="ZIP")
+    # SVGs are XML — let the text path handle them rather than vision.
+    if name.endswith(".svg") or mime_l == "image/svg+xml":
+        return _decode_text(payload, meta)
     if any(name.endswith(ext) for ext in IMAGE_EXTS) or mime_l.startswith("image/"):
         meta["extracted"] = "image"
-        meta["note"] = "Image attached — no automatic text extraction (Gemini-vision summaries land in Phase 2.5)."
+        meta["note"] = "Image attached — call extract_text_async() with a Gemini API key for a vision summary."
         return ("", meta)
     if any(name.endswith(ext) for ext in TEXT_EXTS) or mime_l.startswith("text/"):
         return _decode_text(payload, meta)
@@ -240,6 +356,56 @@ def extract_text(filename: str, mime: str, payload: bytes) -> Tuple[str, Dict[st
         meta["extracted"] = "unknown"
         meta["note"] = f"Binary file ({mime or 'unknown MIME'}) — metadata only."
         return ("", meta)
+
+
+async def extract_text_async(
+    filename: str,
+    mime: str,
+    payload: bytes,
+    *,
+    gemini_api_key: str = "",
+) -> Tuple[str, Dict[str, Any]]:
+    """Async wrapper around extract_text() that adds vision extraction for images.
+
+    For non-image inputs this just delegates to extract_text() (sync). For
+    images, it calls extract_image_with_vision() when a Gemini key is provided
+    — otherwise the metadata-only fallback from extract_text() is returned.
+
+    Use this from async callers (FastAPI endpoints, agent-engine helpers)
+    that have access to the Gemini key. Sync callers can keep using
+    extract_text() and accept the metadata-only image fallback.
+    """
+    name = (filename or "").lower()
+    mime_l = (mime or "").lower()
+
+    # Detect images here so we can route directly without round-tripping
+    # through extract_text() for the binary case (small efficiency win, but
+    # mostly a clarity win — vision is the only async branch).
+    is_image = (
+        any(name.endswith(ext) for ext in IMAGE_EXTS) and not name.endswith(".svg")
+    ) or (
+        mime_l.startswith("image/") and mime_l != "image/svg+xml"
+    )
+
+    if is_image and gemini_api_key:
+        meta: Dict[str, Any] = {"original_size": len(payload), "extracted": "image"}
+        image_mime = _guess_image_mime(filename, mime)
+        text, vmeta = await extract_image_with_vision(
+            payload, image_mime, gemini_api_key=gemini_api_key, filename=filename,
+        )
+        meta.update(vmeta)
+        if text:
+            # Vision succeeded — promote `extracted` to image_vision so the
+            # frontend can show a different badge.
+            meta["extracted"] = "image_vision"
+            return (_truncate(text), meta)
+        # Vision failed (no key, too big, API error) — fall through to
+        # metadata-only path. The error reason is already on `meta`.
+        meta["note"] = "Image attached; vision extraction failed — see metadata.error."
+        return ("", meta)
+
+    # All other paths are synchronous.
+    return extract_text(filename, mime, payload)
 
 
 def materials_to_prompt_block(materials: List[Dict[str, Any]],

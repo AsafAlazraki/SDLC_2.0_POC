@@ -117,12 +117,35 @@ def test_code_file():
 
 
 def test_image():
+    """Sync path: images come back metadata-only with a hint to use the async path."""
     png_magic = b"\x89PNG\r\n\x1a\n" + b"\x00" * 200
     text, meta = mx.extract_text("logo.png", "image/png", png_magic)
     assert meta["extracted"] == "image", meta
-    assert text == ""           # no automatic text extraction yet
-    assert "Gemini-vision" in meta.get("note", "")
-    print("  [3/8] image (metadata only)       OK")
+    assert text == ""           # sync path never invokes vision
+    assert "extract_text_async" in meta.get("note", ""), meta
+    print("  [3/8] image (sync — metadata only) OK")
+
+
+def test_image_vision_async_no_key():
+    """Async path with no Gemini key: should match the sync metadata-only fallback."""
+    import asyncio
+    png_magic = b"\x89PNG\r\n\x1a\n" + b"\x00" * 200
+    text, meta = asyncio.run(
+        mx.extract_text_async("wireframe.png", "image/png", png_magic, gemini_api_key="")
+    )
+    assert text == "", "Without a Gemini key, async should NOT call vision"
+    assert meta["extracted"] == "image", meta
+    print("  [3b/8] image (async, no key)        OK")
+
+
+def test_svg_routed_to_text():
+    """SVGs are XML — the extractor should route them through the text path
+    rather than treating them as images (Gemini-vision rejects SVGs)."""
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><circle r="10"/></svg>'
+    text, meta = mx.extract_text("icon.svg", "image/svg+xml", svg)
+    assert meta["extracted"] == "text", meta
+    assert "<circle" in text
+    print("  [3c/8] svg (routed to text path)    OK")
 
 
 def test_unknown_binary():
@@ -264,6 +287,8 @@ def main() -> int:
         test_plain_text,
         test_code_file,
         test_image,
+        test_image_vision_async_no_key,
+        test_svg_routed_to_text,
         test_unknown_binary,
         test_pdf_when_available,
         test_zip_generic,

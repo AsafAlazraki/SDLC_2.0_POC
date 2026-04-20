@@ -562,10 +562,14 @@ async def api_upload_materials(project_id: int, files: List[UploadFile] = File(.
     for f in files:
         try:
             payload = await f.read()
-            text, meta = materials_extractor.extract_text(
+            # Use the async path so images get a Gemini-vision summary when
+            # GEMINI_API_KEY is set. Non-image inputs delegate to the sync
+            # extract_text() — same behaviour as before.
+            text, meta = await materials_extractor.extract_text_async(
                 f.filename or "(unnamed)",
                 f.content_type or "",
                 payload,
+                gemini_api_key=ENV_GEMINI_KEY,
             )
             material = ProjectMaterialModel(
                 project_id=project_id,
