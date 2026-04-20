@@ -350,12 +350,17 @@ def collect_materials_for_run(project_id: int) -> List[dict]:
         proj = get_project(current_id)
         if not proj:
             break
-        # Always pull self's materials; only climb if inherits is on.
+        # Always pull THIS level's materials.
         for m in list_project_materials(current_id):
             if m["id"] not in seen_ids:
                 out.append(m)
                 seen_ids.add(m["id"])
-        if depth > 0 and not (proj.get("inherits_materials", True)):
+        # Decide whether to climb to the parent. Each level's
+        # `inherits_materials` flag governs whether IT pulls from its
+        # own parent — so we check the CURRENT level's flag (including
+        # depth=0 — the starting project) before climbing. If it opts
+        # out, stop here.
+        if not proj.get("inherits_materials", True):
             break
         current_id = proj.get("parent_id")
         depth += 1
