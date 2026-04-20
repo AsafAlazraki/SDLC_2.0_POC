@@ -12,6 +12,23 @@ CLAUDE.md is the **architecture spec** — what the system *is* now. This file i
 
 ## Architecture Learnings
 
+### Closed-loop UX: parsing structured output back from synthesis (Phase 9 polish)
+
+After Phase 9 routed flags into synthesis, the user only saw flags going in — they had to read the verdict to find the resolutions. Closing the loop meant parsing structured output back from a free-text LLM response, which is fragile by default.
+
+Three matching passes, in increasing tolerance:
+1. **Exact src+tgt match**: original flag's `from_agent` and `target_key` both match the resolution's parsed source/target after alias normalisation. Catches well-formatted output.
+2. **Target-only match**: synthesis sometimes drops the source agent (writes "Performance must address..." instead of "[Security → Performance]"). If only one flag has that target, claim it.
+3. **Fuzzy text match**: synthesis may paraphrase the original flag entirely. Last resort: ≥4-word overlap between ruling text and original flag message.
+
+Lessons:
+- **Always echo the input as a baseline.** The parser starts by returning all original flags with `resolved=False`. Even if synthesis omitted the section entirely, the panel still shows the flags — just with UNRESOLVED badges. Never lose data.
+- **Fuzzy matching needs a floor.** First version of pass 3 matched on any overlap. With short flags ("PII in logs") that gave false positives — every other ruling matched. Setting a 4-word floor cut false positives to ~0% in test runs.
+- **Tolerate header level drift.** Models inconsistently emit `### Cross-Domain Flag Resolutions` vs `## Cross-Domain Flag Resolutions` vs `#### ...`. The header regex matches all three.
+- **Parsing structured output is the quickest way to add UX polish.** No additional API call. No prompt engineering complexity. Just tighter integration of what the model already produces.
+
+The "RESOLVED" green badge on each flag is genuinely satisfying to see in the UI — it makes the inter-agent communication feature feel like a real conversation rather than a one-way reporting protocol.
+
 ### Inter-agent communication without doubling fleet cost (Phase 9)
 
 The original "decided but not built" item was inter-agent mid-run communication — the architect Q&A landed on "agents flag critical findings to each other when latency cost is worth it." When I sat down to actually build it, the design space split into 3:

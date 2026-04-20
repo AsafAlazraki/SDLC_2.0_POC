@@ -482,6 +482,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateFleetStatusMessage(`🔥 ${data.count} cross-domain flag(s) raised — synthesis will resolve`);
             }
 
+            // Phase 9 closed-loop — synthesis ruled on each flag
+            if (eventType === 'flag_resolutions') {
+                state.flagResolutions = data.resolutions || [];
+                renderCrossDomainFlags({ flags: data.resolutions || [] });
+                const msg = data.resolved_count >= data.total
+                    ? `✅ All ${data.total} cross-domain flag(s) resolved by synthesis`
+                    : `🔥 ${data.resolved_count}/${data.total} cross-domain flag(s) resolved — review verdict`;
+                updateFleetStatusMessage(msg);
+            }
+
             // Phase 5 — live cost display when a run finishes.
             if (eventType === 'usage_summary') {
                 state.lastUsageSummary = data;
@@ -861,6 +871,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const cdfPanel = document.getElementById('cross-domain-flags-panel');
         if (cdfPanel) cdfPanel.style.display = 'none';
         state.crossDomainFlags = [];
+        state.flagResolutions = [];
         _fleetSessionId = null;
         updateFleetStatusMessage('');
         state.reportContents = {};
@@ -3876,10 +3887,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 const fromName = (state.personaConfigs[f.from_agent] && state.personaConfigs[f.from_agent].name)
                     || f.from_agent;
                 const fromEmoji = (state.personaConfigs[f.from_agent] && state.personaConfigs[f.from_agent].emoji) || '👤';
+                // Phase 9 closed-loop: synthesis may have ruled on this flag.
+                const resolved = !!f.resolved;
+                const ruling = (f.ruling || '').trim();
+                const owner = (f.owner || '').trim();
+                const ruling_html = resolved && ruling ? `
+                    <div class="cdf-resolution">
+                        <div class="cdf-resolution-badge">✓ RESOLVED</div>
+                        <div class="cdf-resolution-body">
+                            <div class="cdf-ruling"><strong>Ruling:</strong> ${escapeHTML(ruling)}</div>
+                            ${owner ? `<div class="cdf-owner"><strong>Owner:</strong> ${escapeHTML(owner)}</div>` : ''}
+                        </div>
+                    </div>
+                ` : (f.hasOwnProperty('resolved') ? `
+                    <div class="cdf-resolution cdf-resolution--unresolved">
+                        <div class="cdf-resolution-badge">⚠ UNRESOLVED</div>
+                        <div class="cdf-resolution-body cdf-resolution-hint">
+                            Synthesis did not explicitly address this flag — check the verdict's
+                            Cross-Domain Flag Resolutions section.
+                        </div>
+                    </div>
+                ` : '');
                 return `
-                    <li class="cdf-item">
+                    <li class="cdf-item ${resolved ? 'cdf-item--resolved' : ''}">
                         <div class="cdf-from">${fromEmoji} <strong>${escapeHTML(fromName)}</strong> →</div>
-                        <div class="cdf-message">${escapeHTML(f.message)}</div>
+                        <div class="cdf-message">
+                            ${escapeHTML(f.message)}
+                            ${ruling_html}
+                        </div>
                     </li>
                 `;
             }).join('');
@@ -3895,16 +3930,21 @@ document.addEventListener('DOMContentLoaded', () => {
             `;
         }).join('');
 
+        const resolvedCount = flags.filter(f => f.resolved).length;
+        const hasResolutions = flags.some(f => f.hasOwnProperty('resolved'));
+        const headerStat = hasResolutions
+            ? `<span class="cdf-total cdf-total--resolved">${resolvedCount} of ${flags.length} resolved</span>`
+            : `<span class="cdf-total">${flags.length} flag(s) raised between agents</span>`;
+        const intro = hasResolutions
+            ? `Synthesis ruled on ${resolvedCount} of ${flags.length} cross-domain flag(s) below. Each ruling assigns ownership and a path forward — review the verdict for full context.`
+            : `Specialists flagged findings that critically affect other domains. Synthesis will explicitly resolve each one — see the verdict's <em>Cross-Domain Flag Resolutions</em> section.`;
         panel.innerHTML = `
             <div class="cdf-panel-header">
                 <span class="cdf-icon">🔥</span>
                 <h3>Cross-Domain Flags</h3>
-                <span class="cdf-total">${flags.length} flag(s) raised between agents</span>
+                ${headerStat}
             </div>
-            <p class="cdf-intro">
-                Specialists flagged findings that critically affect other domains. Synthesis will
-                explicitly resolve each one — see the verdict's <em>Cross-Domain Flag Resolutions</em> section.
-            </p>
+            <p class="cdf-intro">${intro}</p>
             <div class="cdf-groups">${groups}</div>
         `;
     }

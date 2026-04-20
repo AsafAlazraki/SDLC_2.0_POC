@@ -284,6 +284,7 @@ The `/api/analyze-repo` and `/api/analyze-topic` endpoints return `EventSourceRe
 - `specialist_proposals` — Phase 7B: proposed specialist agents `{proposals[], message}`
 - `synthesis_escalated` — Phase 8: synthesis bumped Sonnet→Opus `{model, reason, thinking_budget, output_budget}`
 - `cross_domain_flags` — Phase 9: inter-agent flags raised before synthesis `{flags[], count, message}`
+- `flag_resolutions` — Phase 9 closed-loop: synthesis ruling + owner mapped to each flag `{resolutions[], resolved_count, total, message}`
 - `usage_summary` — Phase 5: aggregated token counts + cost `{total_input_tokens, total_output_tokens, total_cost_usd}`
 - `error` — error event
 
@@ -460,6 +461,18 @@ const state = {
 - When present, injected into client context: "Budget range: $75K-$250K, Timeline: 12 months"
 - Agents told to "tailor all recommendations to fit these constraints" and "flag anything that exceeds them"
 - PATH A/B/C recommendations become budget-scoped rather than generic
+
+### 18. Closed-Loop Flag Resolution UX (Phase 9 polish)
+- **Problem solved**: Phase 9 routed flags into synthesis but the user only saw the flag panel — they had to manually scroll the verdict to find the resolutions section.
+- **Parser**: `parse_flag_resolutions(synthesis_content, original_flags)` extracts the `### Cross-Domain Flag Resolutions` section from synthesis output and matches each resolution back to its original flag using a 3-pass strategy:
+  1. **Exact match**: source agent + target both match (canonical persona keys after alias normalisation)
+  2. **Target-only match**: source missing or paraphrased, but target lines up
+  3. **Fuzzy text match**: ≥4-word overlap between ruling text and original flag message
+- **Output**: enriched flag list — each original flag gains `{resolved: bool, ruling: str, owner: str}`. Unmatched flags stay with `resolved=False` so the user can spot synthesis gaps.
+- **SSE event**: `flag_resolutions` `{resolutions: [...], resolved_count, total, message}` yielded after synthesis completes (and only if flags were raised).
+- **Frontend**: existing `renderCrossDomainFlags()` re-renders the panel with rulings inlined — green ✓ RESOLVED badge with ruling+owner, or amber ⚠ UNRESOLVED badge with a hint pointing to the verdict.
+- **Header dynamics**: panel header switches from "X flag(s) raised" to "X of Y resolved" once rulings arrive. Total chip turns green when fully resolved.
+- **Resilience**: synthesis omits the section → all flags stay UNRESOLVED, panel still useful. Synthesis uses different header level → header regex tolerates ## / ### / ####. Synthesis paraphrases agent names → fuzzy matching catches it.
 
 ### 17. Cross-Domain Flag Routing — Inter-Agent Communication (Phase 9)
 - **Problem solved**: Agents previously ran fully in parallel and never saw each other's findings until synthesis. The Security Engineer couldn't tell Performance about a perf-killing crypto operation; the QA Lead couldn't warn the Architect about test framework incompatibilities. Synthesis had to detect every cross-cutting concern unaided.

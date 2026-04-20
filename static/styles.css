@@ -4210,3 +4210,70 @@ nav {
 @media (max-width: 600px) {
     .cdf-item { grid-template-columns: 1fr; gap: 4px; }
 }
+
+/* ─────────────────────────────────────────────
+   Phase 9 closed-loop — Flag Resolutions
+   When synthesis rules on a flag, decorate the original flag with the
+   ruling + owner. Green for resolved, amber for unresolved.
+   ───────────────────────────────────────────── */
+.cdf-item--resolved .cdf-message::before {
+    /* Subtle visual cue alongside the badge */
+    border-left-color: #00ffa3;
+}
+.cdf-resolution {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: rgba(0, 255, 163, 0.06);
+    border: 1px solid rgba(0, 255, 163, 0.25);
+    border-radius: 8px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    animation: fadeIn 0.4s ease-out;
+}
+.cdf-resolution--unresolved {
+    background: rgba(255, 170, 0, 0.06);
+    border-color: rgba(255, 170, 0, 0.3);
+}
+.cdf-resolution-badge {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+    padding: 4px 10px;
+    background: rgba(0, 255, 163, 0.18);
+    color: #00ffa3;
+    border-radius: 12px;
+    font-family: 'Space Grotesk', sans-serif;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+    align-self: flex-start;
+}
+.cdf-resolution--unresolved .cdf-resolution-badge {
+    background: rgba(255, 170, 0, 0.2);
+    color: var(--warning);
+}
+.cdf-resolution-body {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.83rem;
+    color: var(--text-main);
+    line-height: 1.5;
+}
+.cdf-resolution-hint { color: var(--text-muted); font-style: italic; }
+.cdf-ruling { margin-bottom: 4px; }
+.cdf-ruling strong, .cdf-owner strong {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-right: 6px;
+}
+.cdf-owner {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+.cdf-total--resolved {
+    background: rgba(0, 255, 163, 0.18) !important;
+    border-color: rgba(0, 255, 163, 0.4) !important;
+    color: #00ffa3 !important;
+}

@@ -2728,6 +2728,200 @@ def format_cross_domain_flags_for_synthesis(
     return "\n".join(lines)
 
 
+# Match the synthesis output section that resolves cross-domain flags. The
+# synthesis prompt asks Sonnet/Opus to write `### Cross-Domain Flag Resolutions`
+# but real models sometimes produce variants — capture them all.
+_FLAG_RESOLUTIONS_HEADER = re.compile(
+    r"^#{2,4}\s*Cross[-\s]Domain\s+Flag\s+Resolutions?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# A resolution block usually looks like:
+#   > **[Source → Target]** *Flag summary*
+#   > **Ruling**: ...
+#   > **Owner**: ...
+# but we tolerate a lot of formatting drift. The strategy:
+#   1. Find the resolutions section
+#   2. Split into resolution blocks separated by blank lines or `>` runs
+#   3. For each block, extract source/target hints, ruling, owner
+# Then we fuzzy-match each parsed resolution to the original flag list by
+# (from_agent, target, message-similarity) so the frontend can display the
+# ruling next to the original flag.
+
+_RESOLUTION_RULING = re.compile(
+    r"\*{1,2}\s*Ruling\s*\*{1,2}\s*[:\-]\s*(.+?)(?=\n\s*[\*>>]|\n\n|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+_RESOLUTION_OWNER = re.compile(
+    r"\*{1,2}\s*Owner\s*\*{1,2}\s*[:\-]\s*(.+?)(?=\n|\Z)",
+    re.IGNORECASE,
+)
+# Match the source/target header. Tolerates [SRC -> TGT], [SRC → TGT],
+# [Source: SRC, Target: TGT] and similar variants.
+_RESOLUTION_HEADER = re.compile(
+    r"""\*{1,2}\s*\[?\s*
+        ([A-Za-z_/ ]+?)            # source agent / domain name
+        \s*(?:→|->|to|→)\s*
+        ([A-Za-z_/ ]+?)
+        \s*\]?\s*\*{1,2}
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def _normalise_flag_message(s: str) -> str:
+    """Lowercase + strip non-alphanumeric for fuzzy comparison."""
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+
+def parse_flag_resolutions(
+    synthesis_content: str,
+    original_flags: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    """Extract per-flag resolutions from a synthesis report and match them
+    back to the original flags emitted by agents.
+
+    Returns a list of dicts, one per original flag, with the resolution
+    text inlined (or empty if no match was found):
+
+        [
+          {
+            "from_agent": "security",
+            "target_key": "performance_engineer",
+            "target_raw": "PERFORMANCE",
+            "message": "AES-CBC sync ...",
+            "resolved": True,
+            "ruling": "Address in Sprint 1 ...",
+            "owner": "Performance Engineer (Path B)",
+          },
+          ...
+        ]
+
+    Pure parser, no API call. Resilient to:
+    - Synthesis omitting the section entirely (returns flags with resolved=False)
+    - Synthesis using a different header level (## vs ### vs ####)
+    - Synthesis abbreviating agent names ("Security" instead of "Security Engineer")
+    - Synthesis dropping the bracket/arrow formatting
+    """
+    # Always start by echoing the original flags with no resolution.
+    enriched: List[Dict[str, str]] = [
+        {
+            **f,
+            "resolved": False,
+            "ruling": "",
+            "owner": "",
+        }
+        for f in (original_flags or [])
+    ]
+
+    if not synthesis_content or not enriched:
+        return enriched
+
+    m = _FLAG_RESOLUTIONS_HEADER.search(synthesis_content)
+    if not m:
+        return enriched  # synthesis didn't write the section — flags stay unresolved
+
+    tail = synthesis_content[m.end():]
+    # Stop at the next H2/H3 to avoid bleeding into adjacent sections.
+    next_header = re.search(r"^#{2,3}\s+\S", tail, re.MULTILINE)
+    section = tail[: next_header.start()] if next_header else tail
+
+    # Split the section into per-resolution blocks. Synthesis usually uses
+    # blockquote `>` syntax; we treat blank lines as separators.
+    blocks = re.split(r"\n\s*\n", section.strip())
+
+    parsed_resolutions: List[Dict[str, str]] = []
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        # Strip leading `>` quoting from each line.
+        block = re.sub(r"^>\s?", "", block, flags=re.MULTILINE)
+
+        header_m = _RESOLUTION_HEADER.search(block)
+        ruling_m = _RESOLUTION_RULING.search(block)
+        owner_m = _RESOLUTION_OWNER.search(block)
+        if not (header_m or ruling_m):
+            continue
+
+        parsed_resolutions.append({
+            "src_text": (header_m.group(1).strip() if header_m else ""),
+            "tgt_text": (header_m.group(2).strip() if header_m else ""),
+            "ruling": (ruling_m.group(1).strip() if ruling_m else block[:240]),
+            "owner": (owner_m.group(1).strip() if owner_m else ""),
+            "raw_block": block[:600],
+        })
+
+    if not parsed_resolutions:
+        return enriched
+
+    # Fuzzy-match each resolution back to an original flag. Strategy:
+    # 1. If src_text/tgt_text both match an original flag's from_agent/target
+    #    (after alias normalisation), claim that flag.
+    # 2. Otherwise, tag the resolution as "unmatched" — still useful, the
+    #    frontend can show it as "additional rulings synthesis added."
+    name_to_key = {}
+    # Build name → key map from PERSONA_CONFIGS plus alias map.
+    for k, cfg in PERSONA_CONFIGS.items():
+        name_to_key[(cfg.get("name") or k).lower()] = k
+        name_to_key[k.lower()] = k
+    for alias, key in _FLAG_TARGET_ALIASES.items():
+        name_to_key[alias.lower()] = key
+
+    def _to_key(text: str) -> str:
+        t = (text or "").lower().strip()
+        if t in name_to_key:
+            return name_to_key[t]
+        # Try partial — e.g. "security engineer" contains "security"
+        for name, key in name_to_key.items():
+            if name and name in t:
+                return key
+        return ""
+
+    used_indexes: set = set()
+    for res in parsed_resolutions:
+        src_key = _to_key(res["src_text"])
+        tgt_key = _to_key(res["tgt_text"])
+        match_idx = -1
+        # Pass 1: exact src+tgt match
+        for i, flag in enumerate(enriched):
+            if i in used_indexes:
+                continue
+            if (src_key and src_key == flag["from_agent"]
+                    and tgt_key and tgt_key == flag.get("target_key")):
+                match_idx = i
+                break
+        # Pass 2: tgt-only match (src might be missing or paraphrased)
+        if match_idx < 0 and tgt_key:
+            for i, flag in enumerate(enriched):
+                if i in used_indexes:
+                    continue
+                if tgt_key == flag.get("target_key"):
+                    match_idx = i
+                    break
+        # Pass 3: fuzzy message match (last resort) — does the ruling text
+        # contain at least 4 words from the original flag message?
+        if match_idx < 0:
+            ruling_words = set(_normalise_flag_message(res["ruling"]).split())
+            best_overlap = 3  # require at least 4 word overlap
+            for i, flag in enumerate(enriched):
+                if i in used_indexes:
+                    continue
+                flag_words = set(_normalise_flag_message(flag["message"]).split())
+                overlap = len(ruling_words & flag_words)
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    match_idx = i
+
+        if match_idx >= 0:
+            used_indexes.add(match_idx)
+            enriched[match_idx]["resolved"] = True
+            enriched[match_idx]["ruling"] = res["ruling"]
+            enriched[match_idx]["owner"] = res["owner"]
+
+    return enriched
+
+
 # ═══════════════════════════════════════════════════════════════
 # Phase 7 — Episodic Memory & Post-Run Documentation
 # ═══════════════════════════════════════════════════════════════
@@ -3734,6 +3928,32 @@ async def run_agent_fleet(
     if synthesis_result.get("usage"):
         all_usage.append(synthesis_result["usage"])
     yield {"event": "agent_result", "data": synthesis_result}
+
+    # Phase 9 closed-loop: parse synthesis for the Cross-Domain Flag
+    # Resolutions section and emit each flag's ruling so the frontend can
+    # decorate the original flag panel.
+    if cross_domain_flags and synthesis_result.get("status") == "success":
+        try:
+            resolutions = parse_flag_resolutions(
+                synthesis_result.get("content", ""),
+                cross_domain_flags,
+            )
+            resolved_count = sum(1 for r in resolutions if r.get("resolved"))
+            yield {
+                "event": "flag_resolutions",
+                "data": {
+                    "resolutions": resolutions,
+                    "resolved_count": resolved_count,
+                    "total": len(resolutions),
+                    "message": (
+                        f"Synthesis resolved {resolved_count} of {len(resolutions)} cross-domain flag(s)"
+                        if resolved_count else
+                        "Synthesis did not explicitly resolve cross-domain flags — review the verdict"
+                    ),
+                }
+            }
+        except Exception as e:
+            logger.warning(f"flag resolution parsing failed: {e}")
 
     # ── Phase 7B: Analyse for specialist gaps & propose spawning ──────────
     if confidence_gate and probe_results and collected_results:
