@@ -376,6 +376,19 @@
                             <p>Analyse an existing codebase, or investigate a topic across a set of sources.</p>
                         </div>
 
+                        <!-- Active project banner (populated by JS when a project is selected) -->
+                        <div id="ingestion-active-project-banner" class="ingestion-active-project" style="display:none;">
+                            <div class="iap-left">
+                                <span class="iap-icon">📂</span>
+                                <div class="iap-text">
+                                    <div class="iap-label">Running for project</div>
+                                    <div class="iap-name" id="iap-project-name">—</div>
+                                    <div class="iap-meta" id="iap-project-meta"></div>
+                                </div>
+                            </div>
+                            <button type="button" class="iap-clear" id="iap-clear-btn" title="Run without a project">× Clear project</button>
+                        </div>
+
                         <!-- Mode Tabs -->
                         <div class="mode-tabs" role="tablist" aria-label="Analysis mode">
                             <button type="button" class="mode-tab active" data-mode="repo" role="tab" aria-selected="true">

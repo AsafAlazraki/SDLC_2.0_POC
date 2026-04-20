@@ -4446,3 +4446,87 @@ nav {
     font-family: 'Space Grotesk', sans-serif;
 }
 .cas-empty { font-size: 0.78rem; color: #888; font-style: italic; }
+
+/* ─────────────────────────────────────────────
+   Ingestion — Active Project Banner
+   Surfaces when the user clicks "Run agent fleet" from a project detail
+   panel. Without this, the ingestion screen looked like a fresh form
+   and the project context felt silently lost.
+   ───────────────────────────────────────────── */
+.ingestion-active-project {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px 18px;
+    margin-bottom: 18px;
+    border-radius: 12px;
+    background: linear-gradient(135deg,
+        rgba(0, 242, 255, 0.08) 0%,
+        rgba(189, 0, 255, 0.06) 100%);
+    border: 1px solid rgba(0, 242, 255, 0.35);
+    animation: fadeIn 0.35s ease-out;
+}
+.iap-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex: 1;
+    min-width: 0;
+}
+.iap-icon {
+    font-size: 1.6rem;
+    line-height: 1;
+    filter: drop-shadow(0 0 8px rgba(0, 242, 255, 0.5));
+}
+.iap-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.iap-label {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-family: 'Space Grotesk', sans-serif;
+}
+.iap-name {
+    font-size: 1rem;
+    color: var(--text-main);
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.iap-meta {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.iap-clear {
+    padding: 6px 12px;
+    font-size: 0.78rem;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-family: 'Space Grotesk', sans-serif;
+    flex-shrink: 0;
+    transition: all 0.15s ease;
+}
+.iap-clear:hover {
+    background: rgba(255, 61, 113, 0.1);
+    border-color: rgba(255, 61, 113, 0.3);
+    color: var(--danger);
+}
+@media (max-width: 600px) {
+    .ingestion-active-project { flex-direction: column; align-items: flex-start; }
+    .iap-clear { align-self: flex-end; }
+}

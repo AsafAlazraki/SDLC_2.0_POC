@@ -3209,12 +3209,82 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    $pj('project-run-btn')?.addEventListener('click', () => {
-        if (!projectsState.activeProject) return;
-        state.selectedProjectId = projectsState.activeProject.id;
-        state.selectedProjectName = projectsState.activeProject.name;
+    $pj('project-run-btn')?.addEventListener('click', async () => {
+        const proj = projectsState.activeProject;
+        if (!proj) return;
+
+        state.selectedProjectId = proj.id;
+        state.selectedProjectName = proj.name;
+        state.selectedProjectGoal = proj.goal || '';
+
+        // Count materials attached to the project — this changes both the
+        // ingestion banner text and whether we auto-switch to Topic mode.
+        let materialCount = 0;
+        try {
+            const res = await fetch(`/api/projects/${proj.id}/materials`);
+            if (res.ok) {
+                const mats = await res.json();
+                materialCount = Array.isArray(mats) ? mats.length : 0;
+            }
+        } catch (_) { /* non-fatal — banner just won't show material count */ }
+
+        // Navigate to Ingestion and paint the active-project banner.
         const ingestionBtn = document.querySelector('.nav-btn[data-target="ingestion"]');
         if (ingestionBtn) ingestionBtn.click();
+        renderIngestionActiveProject({
+            id: proj.id,
+            name: proj.name,
+            goal: proj.goal || '',
+            materialCount,
+            autoSwitchMode: materialCount > 0 ? 'topic' : null,
+        });
+    });
+
+    // ─────────────────────────────────────────
+    // Active-project banner on the Ingestion view
+    // Makes the "I'm about to run for Project X" state visible so clicking
+    // "Run agent fleet" from a project never silently bounces to a blank
+    // ingestion form.
+    // ─────────────────────────────────────────
+    function renderIngestionActiveProject(opts) {
+        const { id, name, goal, materialCount, autoSwitchMode } = opts || {};
+        const banner = document.getElementById('ingestion-active-project-banner');
+        const nameEl = document.getElementById('iap-project-name');
+        const metaEl = document.getElementById('iap-project-meta');
+        if (!banner) return;
+
+        if (!id) {
+            banner.style.display = 'none';
+            return;
+        }
+
+        if (nameEl) nameEl.textContent = name || `Project #${id}`;
+        const metaBits = [];
+        if (materialCount > 0) metaBits.push(`${materialCount} material${materialCount === 1 ? '' : 's'} attached`);
+        else metaBits.push('no materials attached');
+        if (goal) metaBits.push(`Goal: ${goal.length > 80 ? goal.substring(0, 80) + '…' : goal}`);
+        if (metaEl) metaEl.textContent = metaBits.join(' · ');
+        banner.style.display = 'flex';
+
+        // Auto-switch to Topic mode when materials are present (user's intent is
+        // to analyse those materials, not paste a GitHub URL). Also pre-fill
+        // the topic textarea with the project goal as a starting point.
+        if (autoSwitchMode === 'topic') {
+            const topicTab = document.querySelector('.mode-tab[data-mode="topic"]');
+            if (topicTab) topicTab.click();
+            const topicInput = document.getElementById('topic-input');
+            if (topicInput && !topicInput.value.trim() && goal) {
+                topicInput.value = goal;
+            }
+        }
+    }
+
+    // Clear-project button on the ingestion banner
+    document.getElementById('iap-clear-btn')?.addEventListener('click', () => {
+        state.selectedProjectId = null;
+        state.selectedProjectName = null;
+        state.selectedProjectGoal = null;
+        renderIngestionActiveProject({ id: null });
     });
 
     document.querySelectorAll('.nav-btn').forEach(btn => {
