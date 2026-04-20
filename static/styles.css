@@ -1610,6 +1610,8 @@ nav {
 .specialist-event code { background: rgba(236,72,153,0.1); color: #ec4899; }
 .opus-event { background: linear-gradient(135deg, rgba(189,0,255,0.06), rgba(255,170,0,0.04)); border-color: rgba(189,0,255,0.4); }
 .opus-event code { background: rgba(189,0,255,0.12); color: #d966ff; }
+.flag-event { background: rgba(255,87,34,0.06); border-color: rgba(255,87,34,0.4); }
+.flag-event code { background: rgba(255,87,34,0.14); color: #ff7043; }
 @media (max-width: 700px) { .hiw-sse-diagram { flex-direction: column; } .hiw-sse-arrow { align-self: center; transform: rotate(90deg); } }
 
 /* Tech grid */
@@ -4083,4 +4085,128 @@ nav {
 @media (max-width: 600px) {
     .opus-escalation-banner { flex-direction: column; align-items: flex-start; }
     .opus-escalation-cost-hint { align-self: flex-end; }
+}
+
+/* ─────────────────────────────────────────────
+   Phase 9 — Cross-Domain Flags panel
+   Surfaces between fleet completion and synthesis. Each agent's flag
+   is shown grouped by target persona. The look is intentionally "alert"
+   without being scary — orange/red gradient with clear typography.
+   ───────────────────────────────────────────── */
+.cross-domain-flags-panel {
+    margin: 24px 0;
+    padding: 24px 28px;
+    border-radius: 14px;
+    background: linear-gradient(135deg,
+        rgba(255, 87, 34, 0.08) 0%,
+        rgba(255, 170, 0, 0.06) 100%);
+    border: 1px solid rgba(255, 87, 34, 0.3);
+    box-shadow: 0 0 32px rgba(255, 87, 34, 0.1);
+    animation: fadeIn 0.4s ease-out;
+}
+.cdf-panel-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+.cdf-panel-header h3 {
+    margin: 0;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 1.1rem;
+    color: #ff7043;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+.cdf-icon {
+    font-size: 1.8rem;
+    line-height: 1;
+    filter: drop-shadow(0 0 10px rgba(255, 87, 34, 0.7));
+}
+.cdf-total {
+    margin-left: auto;
+    font-size: 0.78rem;
+    padding: 4px 12px;
+    background: rgba(255, 87, 34, 0.18);
+    border: 1px solid rgba(255, 87, 34, 0.4);
+    color: #ff7043;
+    border-radius: 12px;
+    font-family: 'Space Grotesk', sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.cdf-intro {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin: 0 0 18px 0;
+    line-height: 1.5;
+}
+.cdf-intro em { color: #ff7043; font-style: normal; font-weight: 600; }
+.cdf-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.cdf-group {
+    background: rgba(0, 0, 0, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    padding: 14px 16px;
+}
+.cdf-target-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
+}
+.cdf-target-emoji {
+    font-size: 1.3rem;
+    line-height: 1;
+}
+.cdf-target-header strong {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.92rem;
+    color: var(--text-main);
+    letter-spacing: 0.3px;
+}
+.cdf-count {
+    margin-left: auto;
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    background: rgba(255, 87, 34, 0.2);
+    border-radius: 10px;
+    color: #ff7043;
+    font-family: 'Space Grotesk', sans-serif;
+}
+.cdf-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.cdf-item {
+    display: grid;
+    grid-template-columns: minmax(140px, auto) 1fr;
+    gap: 12px;
+    align-items: start;
+    padding: 6px 0;
+}
+.cdf-from {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.cdf-from strong { color: var(--text-main); font-weight: 500; }
+.cdf-message {
+    font-size: 0.88rem;
+    color: var(--text-main);
+    line-height: 1.5;
+}
+@media (max-width: 600px) {
+    .cdf-item { grid-template-columns: 1fr; gap: 4px; }
 }

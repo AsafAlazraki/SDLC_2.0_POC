@@ -283,6 +283,7 @@ The `/api/analyze-repo` and `/api/analyze-topic` endpoints return `EventSourceRe
 - `awaiting_answers` — Phase 6: fleet paused, waiting for user input `{session_id, questions, message, fleet_session_id}`
 - `specialist_proposals` — Phase 7B: proposed specialist agents `{proposals[], message}`
 - `synthesis_escalated` — Phase 8: synthesis bumped Sonnet→Opus `{model, reason, thinking_budget, output_budget}`
+- `cross_domain_flags` — Phase 9: inter-agent flags raised before synthesis `{flags[], count, message}`
 - `usage_summary` — Phase 5: aggregated token counts + cost `{total_input_tokens, total_output_tokens, total_cost_usd}`
 - `error` — error event
 
@@ -460,6 +461,17 @@ const state = {
 - Agents told to "tailor all recommendations to fit these constraints" and "flag anything that exceeds them"
 - PATH A/B/C recommendations become budget-scoped rather than generic
 
+### 17. Cross-Domain Flag Routing — Inter-Agent Communication (Phase 9)
+- **Problem solved**: Agents previously ran fully in parallel and never saw each other's findings until synthesis. The Security Engineer couldn't tell Performance about a perf-killing crypto operation; the QA Lead couldn't warn the Architect about test framework incompatibilities. Synthesis had to detect every cross-cutting concern unaided.
+- **Mechanism**: `CROSS_DOMAIN_FLAGS_INSTRUCTION` is appended to every agent's system prompt. Agents are asked to end their report with an optional `## 🔥 CROSS-DOMAIN FLAGS` section listing 0-3 findings formatted as `- **[TARGET_DOMAIN]** description`.
+- **Parser**: `parse_cross_domain_flags(collected_results)` is a pure regex parser (no API call). Tolerant of `## CROSS-DOMAIN FLAGS` (with or without 🔥), single/double asterisks, missing brackets, and `-`/`*` bullets. Self-flags are silently skipped.
+- **Target normalisation**: `_FLAG_TARGET_ALIASES` maps free-form tokens (PERFORMANCE, PERF, PERFORMANCE ENGINEER, etc.) to canonical persona keys. Unmapped targets stay as `target_raw` and still feed into synthesis as a soft signal.
+- **Synthesis injection**: `format_cross_domain_flags_for_synthesis(flags, persona_configs)` renders the flag roster into a binding `## 🔥 CROSS-DOMAIN FLAGS (BINDING)` block injected after the agent reports. The synthesis prompt gains a new mandatory output section: `### Cross-Domain Flag Resolutions` — every flag must be ruled on (must address / defer / dismiss / requires user input) with assigned ownership.
+- **SSE event**: `cross_domain_flags` `{flags: [{from_agent, target_raw, target_key, message}], count, message}` yielded after fleet completion, before synthesis launches.
+- **Frontend**: `renderCrossDomainFlags()` renders a `.cross-domain-flags-panel` (orange/red gradient) between fleet completion and synthesis. Flags are grouped by target persona. Panel is reset on every dashboard reset.
+- **No latency cost**: Flag parsing is sync regex on existing report text. Synthesis prompt grows by ~500 chars when flags exist. Zero additional API calls.
+- **Failure modes**: If no agent emits flags, no panel is shown and synthesis proceeds normally with no behaviour change.
+
 ### 16. Image Vision via Gemini (Phase 8b)
 - **Vision extractor**: `extract_image_with_vision(payload, mime, *, gemini_api_key, filename)` in `materials_extractor.py` runs Gemini 2.0 Flash on uploaded images (PNG/JPG/JPEG/GIF/WEBP/BMP) and returns a structured markdown summary with 5 sections: What this image is, Visible content, Inferred purpose, Notable details, Open questions.
 - **Async dispatch**: New `extract_text_async(filename, mime, payload, *, gemini_api_key)` is the public async entry point. Routes images to vision when key is present; delegates to sync `extract_text()` for everything else.
@@ -590,7 +602,7 @@ The system implements a layered memory architecture inspired by the v2 Architect
 |---|---|---|
 | ~~Persistent agent memory~~ | ~~High~~ | ✅ **Done** (Phase 7A — episodic memory + living docs) |
 | ~~Report diffing~~ | ~~High~~ | ✅ **Partially done** — agents now receive previous findings and track deltas in risk register/tech debt docs |
-| Inter-agent communication mid-run | High | **Decided** — agents can flag critical findings to each other mid-run when the latency cost is worth it. Not yet implemented. |
+| Inter-agent communication mid-run | High | ✅ **Done (Phase 9)** — Cross-Domain Flag Routing. Every agent's prompt asks for an optional `## 🔥 CROSS-DOMAIN FLAGS` section listing 0-3 findings that critically affect other domains. Parsed after fleet completes, emitted as SSE event, injected into synthesis prompt as binding items. Synthesis writes a dedicated "Cross-Domain Flag Resolutions" section explicitly addressing each flag. |
 | Tier 2 artefact generation | High | **Decided** — conversational "build that" command generating code/config/docs into local project folders. Not yet implemented. |
 | Omnivorous input pipeline | Medium | **Mostly done** — PDFs (pypdf), DOCX (python-docx), .oap/zip with manifest extraction, code/text decoded as UTF-8, images via Gemini-vision summaries (Phase 8b). Audio/video transcripts still TODO. Spreadsheets handled as text/CSV. |
 | Situational Opus escalation | Medium | ✅ **Done (Phase 8)** — `should_escalate_to_opus()` triggers Opus 4.6 with 16K thinking / 12K output when ≥4 agents at low confidence, ≥30% of fleet at low confidence, or zero high-confidence anchors. New SSE event `synthesis_escalated`. Frontend shows banner on synthesis card. |

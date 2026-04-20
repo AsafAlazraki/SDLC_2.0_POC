@@ -12,6 +12,28 @@ CLAUDE.md is the **architecture spec** — what the system *is* now. This file i
 
 ## Architecture Learnings
 
+### Inter-agent communication without doubling fleet cost (Phase 9)
+
+The original "decided but not built" item was inter-agent mid-run communication — the architect Q&A landed on "agents flag critical findings to each other when latency cost is worth it." When I sat down to actually build it, the design space split into 3:
+
+1. **True mid-run**: agents check a shared bulletin board during execution. **Rejected** — single-shot LLM API calls don't pause for shared state. Would require multi-pass agents (literally 2× cost).
+2. **Two-pass with consultation round**: all agents run, then targeted "consultation" calls fire on flagged topics. **Rejected for v1** — adds 5-10 extra API calls, 30-60s latency, and complicates retry/error handling for marginal gain over option 3.
+3. **One-pass with synthesis injection**: agents emit flags as a structured report section; flags get parsed and routed into synthesis as binding items. **Picked.**
+
+Why option 3 is right for v1:
+- **Zero additional API calls.** Flag parsing is sync regex.
+- **Zero additional latency.** Parser runs in <1ms after fleet completes.
+- **Synthesis was already the forum** for cross-cutting decisions. Forcing it to *explicitly* address each flag (new mandatory `### Cross-Domain Flag Resolutions` output section) is the smallest change with the biggest behaviour shift.
+- **The frontend gets a tangible artefact**: a flag panel between fleet completion and synthesis showing "Security flagged Performance about X." Users see inter-agent communication happening, even though it's mediated through a shared verdict.
+
+What I learned about prompting agents to emit structured flags:
+
+- **Quality > quantity threshold matters.** First draft asked for "any" cross-domain flags. Agents emitted 5-7 each, most of them noise ("Security says you should also have monitoring" — Performance already knows). Restricted to 0-3, with explicit "do not invent flags to look thorough" — quality jumped immediately.
+- **Whitelist target tokens.** Without a fixed vocabulary, agents wrote `[PERFORMANCE]`, `[PERFORMANCE ENGINEER]`, `[PERF]`, `[PERFORMANCE/SCALABILITY]`, etc. The alias map handles the messy reality, but the prompt also lists the canonical 17 tokens to nudge agents toward consistency.
+- **"Do not flag yourself"** is a real instruction I had to add. Models will absolutely emit `[SECURITY] watch out for SQL injection` in the Security Engineer's own report.
+
+Surprise: the cleanest signal that this is working will be when synthesis quality measurably improves on runs where flags were raised. We don't have that metric yet — worth adding later.
+
 ### Image vision: cheap, structured, async-only (Phase 8b)
 
 Adding image vision to the materials pipeline turned out to be 90% plumbing and 10% prompt engineering.

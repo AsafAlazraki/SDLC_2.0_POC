@@ -2060,6 +2060,7 @@ async def run_synthesis_agent(
     anthropic_api_key: str,
     model: str = SYNTHESIS_MODEL_SONNET,
     escalation_reason: str = "",
+    cross_domain_flags: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Read all persona reports and produce a CTO-level master action plan with 3 strategic paths.
 
@@ -2094,13 +2095,31 @@ async def run_synthesis_agent(
     ])
 
     agent_count = len(collected_results)
+
+    # Phase 9 — Cross-Domain Flags. Render the flag roster (if any) into a
+    # binding block injected after the agent reports. The synthesis MUST
+    # explicitly resolve each flag rather than letting them silently pass.
+    flags_block = format_cross_domain_flags_for_synthesis(
+        cross_domain_flags or [],
+        persona_configs=PERSONA_CONFIGS,
+    )
+    flags_section = f"\n\n{flags_block}\n" if flags_block else ""
+    flags_clause = ""
+    if cross_domain_flags:
+        flags_clause = (
+            f"\n\n**CRITICAL**: {len(cross_domain_flags)} cross-domain flag(s) were raised "
+            "between agents during the parallel run (see the dedicated section below). "
+            "Your verdict MUST explicitly address each one — name the flag, give your "
+            "ruling, and assign accountability. Do not let any flag pass silently."
+        )
+
     prompt = f"""You have received independent analysis reports from a {agent_count}-agent expert panel — each a world-class specialist who has deeply analysed the same codebase. Your role is Chief Technology Officer and Principal Advisor.
 
-Read ALL reports below. Your job is to synthesise their findings, resolve contradictions, identify the highest-confidence themes, close blind spots, and produce a single authoritative Master Report.
+Read ALL reports below. Your job is to synthesise their findings, resolve contradictions, identify the highest-confidence themes, close blind spots, and produce a single authoritative Master Report.{flags_clause}
 
 --- ALL {agent_count} AGENT REPORTS ---
 {all_reports}
---- END OF ALL REPORTS ---
+--- END OF ALL REPORTS ---{flags_section}
 
 Now produce your Master Report with EXACTLY these sections:
 
@@ -2112,6 +2131,15 @@ List every finding that three or more agents independently identified — these 
 
 ### Cross-Agent Contradictions Resolved
 Identify where agents disagreed (e.g. Performance recommending aggressive caching vs Security flagging it as a risk vector). For each contradiction: state it clearly, give your definitive recommendation, and explain the reasoning.
+
+### Cross-Domain Flag Resolutions
+For EACH cross-domain flag raised in the dedicated section above, write a short ruling. Use this format:
+
+> **[Source Agent → Target Agent]** *Flag summary*
+> **Ruling**: Your binding decision (must address / defer to phase X / dismiss with reason / requires user input).
+> **Owner**: Which path/team picks this up.
+
+If no cross-domain flags were raised, write "No cross-domain flags surfaced in this run." and move on. Do NOT skip this section silently.
 
 ### Blind Spots — What the Panel Missed
 2–3 important considerations that the agent panel collectively missed or underweighted. These are often the risks that cause modernisation programmes to fail.
@@ -2490,6 +2518,214 @@ def build_user_answers_block(user_answers: Dict[str, Any]) -> str:
     if len(lines) <= 1:
         return ""
     return "\n".join(lines) + "\n"
+
+
+# ═══════════════════════════════════════════════════════════════
+# Phase 9 — Cross-Domain Flag Routing (inter-agent communication)
+# ═══════════════════════════════════════════════════════════════
+#
+# Agents currently run fully in parallel and never see each other's output
+# until synthesis. This means the Security Engineer can't tell the Performance
+# Engineer that the crypto in checkout/ is a perf killer; the QA Lead can't
+# warn the Architect that the test framework is incompatible with the proposed
+# rebuild approach.
+#
+# The fix without doubling fleet cost: ask every agent to end with a structured
+# CROSS-DOMAIN FLAGS block. We parse those flags after the fleet completes and
+# inject them into synthesis as binding cross-cutting concerns the verdict MUST
+# address. This is one-pass mid-run communication — flags fire before synthesis,
+# not before other agents — but synthesis becomes the explicit forum where
+# inter-agent communication is resolved.
+
+CROSS_DOMAIN_FLAGS_INSTRUCTION = """## Cross-Domain Flag Protocol (REQUIRED — final section of your report)
+
+If — and only if — you found something during your analysis that critically
+affects another domain, end your report with EXACTLY this section:
+
+## 🔥 CROSS-DOMAIN FLAGS
+
+- **[TARGET_DOMAIN]** Brief description (1 sentence). Why this domain must address it.
+- **[TARGET_DOMAIN]** Brief description (1 sentence). Why this domain must address it.
+
+Rules:
+- Use 0-3 flags. Quality > quantity. If nothing critically crosses domains, OMIT
+  the section entirely. Do not invent flags to look thorough.
+- TARGET_DOMAIN must be one of: SECURITY, PERFORMANCE, COMPLIANCE, DEVOPS, QA,
+  ARCHITECT, DATA, COST, UX, BA, PM, TECH_LEAD, API_DESIGN, AI_INNOVATION,
+  OUTSYSTEMS, SECOPS, TECH_DOCS.
+- Flag only findings that materially change what the target domain should
+  recommend — not nice-to-knows. Examples: "Performance bottleneck IS a
+  security vulnerability." "Cost-cutting suggestion would violate compliance."
+  "Architecture proposal breaks the QA strategy."
+- Do NOT flag yourself. Do NOT flag findings already obvious from the codebase
+  scan (e.g. "no tests" — QA already saw that).
+
+These flags are aggregated and routed into the synthesis pass as binding
+cross-cutting concerns the final verdict must explicitly resolve.
+"""
+
+
+# Match e.g. `## 🔥 CROSS-DOMAIN FLAGS` or `## CROSS-DOMAIN FLAGS` (emoji-optional).
+_CROSS_DOMAIN_HEADER = re.compile(
+    r"^##\s*(?:🔥\s*)?CROSS[-\s]DOMAIN\s+FLAGS\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+# Match a flag bullet: `- **[TARGET]** ...`. Tolerant of *single* asterisks,
+# missing brackets, and both `-` and `*` bullets.
+_FLAG_BULLET = re.compile(
+    r"""^\s*[-*]\s*           # bullet
+        \*{1,2}\s*\[?\s*       # opening ** or * + optional [
+        ([A-Z_/ ]+?)           # TARGET — capital letters/underscore
+        \s*\]?\s*\*{1,2}       # optional ] + closing
+        [:\s]*                 # optional colon/space
+        (.+?)\s*$              # the actual message
+    """,
+    re.VERBOSE | re.MULTILINE,
+)
+
+# Map free-form target tokens emitted by agents to canonical persona keys.
+# Agents sometimes write "DEVOPS" or "DevOps" or "DEVOPS/SRE" — normalise.
+_FLAG_TARGET_ALIASES = {
+    "SECURITY": "security",
+    "SECURITY ENGINEER": "security",
+    "PERFORMANCE": "performance_engineer",
+    "PERF": "performance_engineer",
+    "PERFORMANCE ENGINEER": "performance_engineer",
+    "COMPLIANCE": "compliance",
+    "PRIVACY": "compliance",
+    "DEVOPS": "devops",
+    "DEVOPS/SRE": "devops",
+    "SRE": "devops",
+    "QA": "qa",
+    "QA LEAD": "qa",
+    "ARCHITECT": "architect",
+    "SOLUTIONS ARCHITECT": "architect",
+    "ARCHITECTURE": "architect",
+    "DATA": "data_engineering",
+    "DATA ENGINEERING": "data_engineering",
+    "DATA ENGINEER": "data_engineering",
+    "COST": "cost_analyst",
+    "COST ANALYST": "cost_analyst",
+    "FINOPS": "cost_analyst",
+    "UX": "ui_ux",
+    "UI/UX": "ui_ux",
+    "UI": "ui_ux",
+    "DESIGN": "ui_ux",
+    "BA": "ba",
+    "BUSINESS ANALYST": "ba",
+    "PM": "product_management",
+    "PRODUCT": "product_management",
+    "PRODUCT MANAGER": "product_management",
+    "PRODUCT MANAGEMENT": "product_management",
+    "TECH_LEAD": "tech_lead",
+    "TECH LEAD": "tech_lead",
+    "TECHLEAD": "tech_lead",
+    "API_DESIGN": "api_designer",
+    "API": "api_designer",
+    "API DESIGNER": "api_designer",
+    "AI_INNOVATION": "ai_innovation_scout",
+    "AI INNOVATION": "ai_innovation_scout",
+    "AI INNOVATION SCOUT": "ai_innovation_scout",
+    "AI": "ai_innovation_scout",
+    "OUTSYSTEMS": "outsystems_architect",
+    "OUTSYSTEMS ARCHITECT": "outsystems_architect",
+    "ODC": "outsystems_architect",
+    "OUTSYSTEMS MIGRATION": "outsystems_migration",
+    "SECOPS": "secops",
+    "DEVSECOPS": "secops",
+    "TECH_DOCS": "tech_docs",
+    "TECH DOCS": "tech_docs",
+    "TECHNICAL WRITER": "tech_docs",
+    "DOCS": "tech_docs",
+    "DOCUMENTATION": "tech_docs",
+}
+
+
+def parse_cross_domain_flags(
+    collected_results: Dict[str, str],
+) -> List[Dict[str, str]]:
+    """Extract CROSS-DOMAIN FLAGS sections from each agent's report.
+
+    Returns a list of dicts: `{from_agent, target_raw, target_key, message}`.
+    `target_key` is the canonical persona key (or "" if the target couldn't
+    be normalised — useful as a soft signal in synthesis even if no specific
+    persona matches).
+
+    Pure parser. No API calls. Resilient to malformed agent output:
+    - Missing section → no flags
+    - Empty section → no flags
+    - Bullets without targets → silently skipped
+    - Self-flags (Security flagging Security) → silently skipped
+    """
+    flags: List[Dict[str, str]] = []
+    for agent_key, content in (collected_results or {}).items():
+        if not content or not isinstance(content, str):
+            continue
+        m = _CROSS_DOMAIN_HEADER.search(content)
+        if not m:
+            continue
+        # Take everything from the header to the next H2 (or EOF).
+        tail = content[m.end():]
+        # Stop at the next ## header so we don't bleed into adjacent sections.
+        next_h2 = re.search(r"^##\s+\S", tail, re.MULTILINE)
+        section = tail[: next_h2.start()] if next_h2 else tail
+
+        for bullet in _FLAG_BULLET.finditer(section):
+            target_raw = (bullet.group(1) or "").strip().upper()
+            message = (bullet.group(2) or "").strip()
+            if not target_raw or not message:
+                continue
+            target_key = _FLAG_TARGET_ALIASES.get(target_raw, "")
+            # Skip self-flags — agents shouldn't flag themselves.
+            if target_key and target_key == agent_key:
+                continue
+            flags.append({
+                "from_agent": agent_key,
+                "target_raw": target_raw,
+                "target_key": target_key,
+                "message": message,
+            })
+    return flags
+
+
+def format_cross_domain_flags_for_synthesis(
+    flags: List[Dict[str, str]],
+    persona_configs: Optional[Dict[str, Dict]] = None,
+) -> str:
+    """Render the flag list into a prompt block for the synthesis agent.
+
+    The verdict is told to explicitly resolve each flag — no silent
+    pass-through. We sort by target so synthesis can scan domain-by-domain.
+    """
+    if not flags:
+        return ""
+
+    name_for = {}
+    for k, cfg in (persona_configs or {}).items():
+        name_for[k] = cfg.get("name", k)
+
+    # Group by target persona for easier reading.
+    by_target: Dict[str, List[Dict[str, str]]] = {}
+    for f in flags:
+        key = f.get("target_key") or f.get("target_raw") or "UNKNOWN"
+        by_target.setdefault(key, []).append(f)
+
+    lines = [
+        "## 🔥 CROSS-DOMAIN FLAGS (BINDING — must be addressed in synthesis)",
+        "",
+        f"During parallel analysis, agents raised {len(flags)} cross-domain flag(s) — findings",
+        "from one specialist that critically affect another domain. You MUST explicitly address",
+        "each flag below in your verdict. Do NOT let any flag pass without resolution.",
+        "",
+    ]
+    for target, entries in by_target.items():
+        target_label = name_for.get(target, target.replace("_", " ").title())
+        lines.append(f"### Flagged for: {target_label}")
+        for f in entries:
+            from_label = name_for.get(f["from_agent"], f["from_agent"])
+            lines.append(f"- **From {from_label}**: {f['message']}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -3382,6 +3618,11 @@ async def run_agent_fleet(
         augmented_persona_prompts = augmented_persona_prompts + "\n\n" + cross_agent_briefing
     if user_answers_block:
         augmented_persona_prompts = augmented_persona_prompts + "\n\n" + user_answers_block
+    # Phase 9 — Cross-domain flags. Every agent is asked to end with a structured
+    # block listing 0-3 findings that other domains MUST address. These flags are
+    # parsed after the fleet completes and routed into synthesis as binding
+    # cross-cutting concerns.
+    augmented_persona_prompts = augmented_persona_prompts + "\n\n" + CROSS_DOMAIN_FLAGS_INSTRUCTION
 
     async def staggered_agent(persona_key: str, stagger_delay: float):
         """Wrapper that waits stagger_delay seconds before running the agent."""
@@ -3445,6 +3686,19 @@ async def run_agent_fleet(
         }
     }
 
+    # Phase 9 — Cross-Domain Flag Routing. Pull cross-cutting concerns out of
+    # every agent's report and inject them into synthesis as binding items.
+    cross_domain_flags = parse_cross_domain_flags(collected_results)
+    if cross_domain_flags:
+        yield {
+            "event": "cross_domain_flags",
+            "data": {
+                "flags": cross_domain_flags,
+                "count": len(cross_domain_flags),
+                "message": f"{len(cross_domain_flags)} cross-domain flag(s) raised — synthesis will resolve each one",
+            }
+        }
+
     # Situational Opus escalation: if confidence probes flagged a difficult run,
     # bump synthesis to Opus 4.6 so the model can reason more deeply through
     # contradictions and ambiguous evidence. Cost ~5x; worth it on hard cases.
@@ -3475,6 +3729,7 @@ async def run_agent_fleet(
         anthropic_api_key,
         model=synthesis_model,
         escalation_reason=escalate_reason,
+        cross_domain_flags=cross_domain_flags,
     )
     if synthesis_result.get("usage"):
         all_usage.append(synthesis_result["usage"])

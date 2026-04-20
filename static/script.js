@@ -475,6 +475,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateFleetStatusMessage(msg);
             }
 
+            // Phase 9 — cross-domain flags raised between agents
+            if (eventType === 'cross_domain_flags') {
+                state.crossDomainFlags = data.flags || [];
+                renderCrossDomainFlags(data);
+                updateFleetStatusMessage(`🔥 ${data.count} cross-domain flag(s) raised — synthesis will resolve`);
+            }
+
             // Phase 5 — live cost display when a run finishes.
             if (eventType === 'usage_summary') {
                 state.lastUsageSummary = data;
@@ -850,6 +857,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (confPanel) confPanel.classList.add('hidden');
         const confQA = document.getElementById('confidence-qa');
         if (confQA) confQA.classList.add('hidden');
+        // Reset cross-domain flags panel (Phase 9)
+        const cdfPanel = document.getElementById('cross-domain-flags-panel');
+        if (cdfPanel) cdfPanel.style.display = 'none';
+        state.crossDomainFlags = [];
         _fleetSessionId = null;
         updateFleetStatusMessage('');
         state.reportContents = {};
@@ -3816,6 +3827,87 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════
     // Phase 7B — Specialist Agent Proposals
     // ═══════════════════════════════════════════════
+
+    // ═══════════════════════════════════════════════
+    // Phase 9 — Cross-Domain Flags renderer
+    // Surfaced as a transient panel between fleet completion and synthesis,
+    // showing what each agent flagged for whom. Synthesis is told to resolve
+    // each flag explicitly — this panel is the user-facing receipt.
+    // ═══════════════════════════════════════════════
+
+    function renderCrossDomainFlags(data) {
+        const flags = (data && data.flags) || [];
+        if (!flags.length) {
+            const existing = document.getElementById('cross-domain-flags-panel');
+            if (existing) existing.style.display = 'none';
+            return;
+        }
+
+        // Lazy-create the panel — it didn't exist in initial HTML.
+        let panel = document.getElementById('cross-domain-flags-panel');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 'cross-domain-flags-panel';
+            panel.className = 'cross-domain-flags-panel glass-card fade-in';
+            // Insert before the synthesis card so users see flags as they appear,
+            // then watch synthesis resolve them.
+            const dashboard = document.getElementById('dashboard') || document.querySelector('.dashboard') || document.body;
+            const synthCard = document.getElementById('report-synthesis');
+            if (synthCard && synthCard.parentNode === dashboard) {
+                dashboard.insertBefore(panel, synthCard);
+            } else {
+                dashboard.appendChild(panel);
+            }
+        }
+        panel.style.display = 'block';
+
+        // Group by target agent for cleaner display.
+        const byTarget = {};
+        flags.forEach(f => {
+            const key = f.target_key || (f.target_raw || 'UNKNOWN').toLowerCase();
+            (byTarget[key] = byTarget[key] || []).push(f);
+        });
+
+        const groups = Object.entries(byTarget).map(([target, items]) => {
+            const targetName = (state.personaConfigs[target] && state.personaConfigs[target].name)
+                || target.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const targetEmoji = (state.personaConfigs[target] && state.personaConfigs[target].emoji) || '🎯';
+            const items_html = items.map(f => {
+                const fromName = (state.personaConfigs[f.from_agent] && state.personaConfigs[f.from_agent].name)
+                    || f.from_agent;
+                const fromEmoji = (state.personaConfigs[f.from_agent] && state.personaConfigs[f.from_agent].emoji) || '👤';
+                return `
+                    <li class="cdf-item">
+                        <div class="cdf-from">${fromEmoji} <strong>${escapeHTML(fromName)}</strong> →</div>
+                        <div class="cdf-message">${escapeHTML(f.message)}</div>
+                    </li>
+                `;
+            }).join('');
+            return `
+                <div class="cdf-group">
+                    <div class="cdf-target-header">
+                        <span class="cdf-target-emoji">${targetEmoji}</span>
+                        <strong>Flagged for ${escapeHTML(targetName)}</strong>
+                        <span class="cdf-count">${items.length}</span>
+                    </div>
+                    <ul class="cdf-list">${items_html}</ul>
+                </div>
+            `;
+        }).join('');
+
+        panel.innerHTML = `
+            <div class="cdf-panel-header">
+                <span class="cdf-icon">🔥</span>
+                <h3>Cross-Domain Flags</h3>
+                <span class="cdf-total">${flags.length} flag(s) raised between agents</span>
+            </div>
+            <p class="cdf-intro">
+                Specialists flagged findings that critically affect other domains. Synthesis will
+                explicitly resolve each one — see the verdict's <em>Cross-Domain Flag Resolutions</em> section.
+            </p>
+            <div class="cdf-groups">${groups}</div>
+        `;
+    }
 
     let _pendingProposals = [];
 
