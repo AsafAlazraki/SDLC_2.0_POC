@@ -8,7 +8,7 @@ import httpx
 import json
 import re
 import logging
-from typing import List, Dict, Any, Optional, AsyncGenerator
+from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple
 from google import genai
 from google.genai import types
 import anthropic
@@ -41,6 +41,237 @@ ANTHROPIC_RETRY_BASE_DELAY = 15  # seconds — doubles each retry (15, 30, 60)
 
 # Stagger between successive Anthropic agent launches (seconds)
 ANTHROPIC_LAUNCH_STAGGER = 4
+
+
+# ─────────────────────────────────────────────
+# Cost Model (per million tokens, USD)
+# ─────────────────────────────────────────────
+# Claude Sonnet 4.6 — https://docs.anthropic.com/en/docs/about-claude/models
+COST_PER_MTOK = {
+    "anthropic": {
+        "input":        3.00,   # $3 per MTok input  (Sonnet 4.6)
+        "output":      15.00,   # $15 per MTok output (Sonnet 4.6)
+        "cache_write":  3.75,   # 25% surcharge on cache-miss writes
+        "cache_read":   0.30,   # 90% discount for cache hits
+    },
+    "anthropic_opus": {
+        "input":       15.00,   # $15 per MTok input  (Opus 4.6) — 5x Sonnet
+        "output":      75.00,   # $75 per MTok output (Opus 4.6) — 5x Sonnet
+        "cache_write": 18.75,   # 25% surcharge
+        "cache_read":   1.50,   # 90% discount
+    },
+    "gemini": {
+        "input":  0.075,        # Gemini 2.0 Flash — very cheap
+        "output": 0.30,
+    },
+}
+
+# ─────────────────────────────────────────────
+# Synthesis model selection — Situational Opus Escalation
+# ─────────────────────────────────────────────
+# When confidence probes detect a difficult run, escalate synthesis from Sonnet
+# to Opus. Opus is ~5x cost but materially better at resolving deep
+# contradictions and reasoning about ambiguous evidence.
+SYNTHESIS_MODEL_SONNET = "claude-sonnet-4-6"
+SYNTHESIS_MODEL_OPUS   = "claude-opus-4-6"
+# Tunable thresholds — change here, not in call sites
+ESCALATE_LOW_CONFIDENCE_RATIO = 0.30   # >=30% of agents at low confidence
+ESCALATE_LOW_CONFIDENCE_COUNT = 4      # OR 4+ agents at low confidence (whichever fires first)
+ESCALATE_NO_HIGH_CONFIDENCE   = True   # If ZERO high-confidence agents, escalate regardless
+ESCALATE_THINKING_BUDGET      = 16000  # Opus gets a bigger thinking budget than Sonnet's 8K
+ESCALATE_OUTPUT_BUDGET        = 12000  # Slightly larger output for richer adjudication
+
+
+def _extract_anthropic_usage(message, model: str = "claude-sonnet-4-6") -> Dict[str, Any]:
+    """Pull token counts + cost from an Anthropic messages response.
+
+    Pass `model` to bill against the correct rate card — Opus runs cost ~5x Sonnet."""
+    u = getattr(message, "usage", None)
+    if not u:
+        return {"provider": "anthropic", "model": model}
+    d: Dict[str, Any] = {
+        "provider": "anthropic",
+        "model": model,
+        "input_tokens": getattr(u, "input_tokens", 0),
+        "output_tokens": getattr(u, "output_tokens", 0),
+        "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0,
+        "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
+    }
+    # Pick the right rate card. Opus uses anthropic_opus, everything else uses anthropic.
+    rate_key = "anthropic_opus" if "opus" in model.lower() else "anthropic"
+    rates = COST_PER_MTOK[rate_key]
+    cost_usd = (
+        d["input_tokens"] * rates["input"]
+        + d["output_tokens"] * rates["output"]
+        + d["cache_creation_input_tokens"] * rates["cache_write"]
+        + d["cache_read_input_tokens"] * rates["cache_read"]
+    ) / 1_000_000
+    d["cost_usd"] = round(cost_usd, 6)
+    d["cost_cents"] = round(cost_usd * 100, 4)
+    return d
+
+
+def _extract_gemini_usage(response) -> Dict[str, Any]:
+    """Pull token counts + cost from a Gemini response."""
+    um = getattr(response, "usage_metadata", None)
+    d: Dict[str, Any] = {
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "input_tokens": getattr(um, "prompt_token_count", 0) if um else 0,
+        "output_tokens": getattr(um, "candidates_token_count", 0) if um else 0,
+    }
+    rates = COST_PER_MTOK["gemini"]
+    cost_usd = (
+        d["input_tokens"] * rates["input"]
+        + d["output_tokens"] * rates["output"]
+    ) / 1_000_000
+    d["cost_usd"] = round(cost_usd, 6)
+    d["cost_cents"] = round(cost_usd * 100, 4)
+    return d
+
+
+def aggregate_usage(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Roll up a list of per-call usage dicts into a run-level summary."""
+    total_input = total_output = total_cache_write = total_cache_read = 0
+    total_cost_usd = 0.0
+    by_provider: Dict[str, Dict[str, float]] = {}
+    for u in items:
+        provider = u.get("provider", "unknown")
+        total_input += u.get("input_tokens", 0)
+        total_output += u.get("output_tokens", 0)
+        total_cache_write += u.get("cache_creation_input_tokens", 0)
+        total_cache_read += u.get("cache_read_input_tokens", 0)
+        cost = u.get("cost_usd", 0.0)
+        total_cost_usd += cost
+        prov = by_provider.setdefault(provider, {"calls": 0, "cost_usd": 0.0})
+        prov["calls"] += 1
+        prov["cost_usd"] = round(prov["cost_usd"] + cost, 6)
+    return {
+        "total_input_tokens": total_input,
+        "total_output_tokens": total_output,
+        "total_cache_write_tokens": total_cache_write,
+        "total_cache_read_tokens": total_cache_read,
+        "total_cost_usd": round(total_cost_usd, 4),
+        "total_cost_cents": round(total_cost_usd * 100, 2),
+        "by_provider": by_provider,
+    }
+
+
+# ─────────────────────────────────────────────
+# Situational Opus Escalation — synthesis model selector
+# ─────────────────────────────────────────────
+
+def should_escalate_to_opus(probe_results: Optional[Dict[str, Dict[str, Any]]]) -> Tuple[bool, str]:
+    """Decide whether synthesis should run on Opus instead of Sonnet.
+
+    Looks at the confidence-probe payload (per-agent {confidence: high|medium|low})
+    and applies the thresholds defined in module-level constants.
+
+    Returns (escalate, reason). `reason` is a short human-readable string that
+    is yielded as an SSE event so the frontend can show why we paid 5x.
+
+    Safe with `None` or `{}` input — returns (False, "") so callers don't need
+    to special-case projects that skipped the confidence probe.
+    """
+    if not probe_results:
+        return (False, "")
+
+    levels = []
+    for agent_key, probe in probe_results.items():
+        if not isinstance(probe, dict):
+            continue
+        lvl = (probe.get("confidence") or "").strip().lower()
+        if lvl in ("high", "medium", "low"):
+            levels.append(lvl)
+
+    if not levels:
+        return (False, "")
+
+    total = len(levels)
+    low_count = sum(1 for l in levels if l == "low")
+    high_count = sum(1 for l in levels if l == "high")
+    low_ratio = low_count / total if total else 0.0
+
+    # Rule 1: too many low-confidence agents (count threshold)
+    if low_count >= ESCALATE_LOW_CONFIDENCE_COUNT:
+        return (True, f"{low_count} agents flagged low confidence — escalating to Opus for deeper adjudication")
+
+    # Rule 2: too many low-confidence agents (ratio threshold)
+    if low_ratio >= ESCALATE_LOW_CONFIDENCE_RATIO:
+        pct = int(round(low_ratio * 100))
+        return (True, f"{pct}% of fleet at low confidence ({low_count}/{total}) — escalating to Opus")
+
+    # Rule 3: zero high-confidence anchors means nobody to lean on
+    if ESCALATE_NO_HIGH_CONFIDENCE and high_count == 0 and total >= 5:
+        return (True, f"No high-confidence agents in fleet of {total} — escalating to Opus to compensate")
+
+    return (False, "")
+
+
+# ─────────────────────────────────────────────
+# Cross-provider fallback helpers
+# ─────────────────────────────────────────────
+
+# Heuristic patterns that identify a Gemini auth/quota failure. Used only for
+# logging — the fallback itself triggers on ANY Gemini exception.
+_GEMINI_AUTH_ERROR_PATTERNS = (
+    "api key",
+    "api_key",
+    "api key not valid",
+    "permission_denied",
+    "permission denied",
+    "authentication",
+    "unauthorized",
+    "401",
+    "403",
+    "invalid authentication credentials",
+)
+
+_GEMINI_QUOTA_ERROR_PATTERNS = (
+    "quota",
+    "rate limit",
+    "resource_exhausted",
+    "429",
+)
+
+
+def _classify_gemini_error(exc: Exception) -> str:
+    """Return a short tag describing what kind of Gemini failure this is."""
+    msg = str(exc).lower()
+    if any(p in msg for p in _GEMINI_AUTH_ERROR_PATTERNS):
+        return "auth"
+    if any(p in msg for p in _GEMINI_QUOTA_ERROR_PATTERNS):
+        return "quota"
+    return "error"
+
+
+async def _run_prompt_on_anthropic(
+    prompt: str,
+    anthropic_api_key: str,
+    *,
+    max_tokens: int = 4096,
+    temperature: float = 0.3,
+    system: str = "You are a senior technical discovery agent. Provide deep, structured analysis.",
+) -> tuple:
+    """
+    Run a prompt on Claude Sonnet 4.6 — used as a fallback when Gemini fails.
+    Reuses the Anthropic semaphore so the 2-concurrent-call ceiling still applies.
+    Returns (text, usage_dict).  Raises if no key is configured.
+    """
+    if not anthropic_api_key:
+        raise RuntimeError("No Anthropic API key available for fallback.")
+    semaphore = get_anthropic_semaphore()
+    async with semaphore:
+        client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
+        message = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return message.content[0].text, _extract_anthropic_usage(message)
+
 
 # ─────────────────────────────────────────────
 # Persona-Aware Context Filtering
@@ -336,6 +567,213 @@ async def clone_github_repo(url: str) -> str:
                 continue
 
         return "".join(all_content)
+
+
+# ─────────────────────────────────────────────
+# URL / Topic Source Ingestion
+# ─────────────────────────────────────────────
+
+# Max chars per individual scraped URL before truncation
+MAX_URL_CONTENT_CHARS = 60_000
+# Overall char budget for combined topic sources (keeps corpora comparable to repo mode)
+MAX_TOPIC_TOTAL_CHARS = 900_000
+
+
+def _strip_html_fallback(html: str) -> str:
+    """
+    Last-resort HTML → text conversion when trafilatura is unavailable or fails.
+    Removes scripts/styles, collapses tags, normalises whitespace.
+    """
+    # Drop script/style blocks entirely
+    html = re.sub(r'<(script|style)[^>]*>.*?</\1>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
+    # Drop all remaining tags
+    text = re.sub(r'<[^>]+>', ' ', html)
+    # Decode a handful of common HTML entities
+    entities = {
+        '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>',
+        '&quot;': '"', '&#39;': "'", '&apos;': "'", '&hellip;': '…',
+        '&mdash;': '—', '&ndash;': '–', '&rsquo;': '’', '&lsquo;': '‘',
+    }
+    for entity, replacement in entities.items():
+        text = text.replace(entity, replacement)
+    # Collapse whitespace
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+async def _fetch_url_content(url: str, client: httpx.AsyncClient) -> tuple:
+    """
+    Fetch one URL and return (url, title, extracted_text, error_or_none).
+    Uses trafilatura when available for clean main-content extraction,
+    falls back to a tag-stripping regex on the raw HTML otherwise.
+    """
+    try:
+        resp = await client.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (compatible; SDLCDiscoveryBot/1.0; "
+                    "+https://github.com/anthropic-claude)"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+            follow_redirects=True,
+        )
+        if resp.status_code >= 400:
+            return url, "", "", f"HTTP {resp.status_code}"
+        html = resp.text
+
+        title = ""
+        title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+        if title_match:
+            title = re.sub(r'\s+', ' ', title_match.group(1)).strip()[:200]
+
+        extracted = ""
+        try:
+            import trafilatura  # type: ignore
+            extracted = trafilatura.extract(
+                html,
+                include_comments=False,
+                include_tables=True,
+                favor_precision=False,
+                favor_recall=True,
+            ) or ""
+        except ImportError:
+            extracted = ""
+        except Exception as e:
+            logger.warning(f"trafilatura failed on {url}: {e}")
+            extracted = ""
+
+        if not extracted or len(extracted) < 200:
+            extracted = _strip_html_fallback(html)
+
+        if len(extracted) > MAX_URL_CONTENT_CHARS:
+            extracted = extracted[:MAX_URL_CONTENT_CHARS] + f"\n\n[... truncated at {MAX_URL_CONTENT_CHARS:,} chars ...]"
+
+        return url, title, extracted, None
+    except httpx.TimeoutException:
+        return url, "", "", "timeout"
+    except Exception as e:
+        return url, "", "", f"{type(e).__name__}: {e}"
+
+
+async def ingest_urls(urls: List[str]) -> tuple:
+    """
+    Scrape a list of URLs concurrently and format them as file-block style
+    context so the existing persona filtering works unchanged.
+
+    The header format intentionally mirrors clone_github_repo() — each block is:
+        {'='*60}
+        FILE: <url>
+        {'='*60}
+        <extracted text>
+
+    Using the URL as the "FILE" path means priority-path scoring in
+    filter_context_for_persona works naturally (e.g. 'outsystems.com/case'
+    scores highly for the OutSystems personas).
+
+    Returns (combined_context, ingest_summary) where ingest_summary is a dict
+    with keys: total, successful, failed, errors, urls_included.
+    """
+    if not urls:
+        return "", {"total": 0, "successful": 0, "failed": 0, "errors": [], "urls_included": []}
+
+    clean_urls = []
+    for u in urls:
+        if not u:
+            continue
+        u = u.strip()
+        if not u:
+            continue
+        if not u.startswith(("http://", "https://")):
+            u = "https://" + u
+        clean_urls.append(u)
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        tasks = [_fetch_url_content(u, client) for u in clean_urls]
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+
+    blocks: List[str] = []
+    total_chars = 0
+    successful = 0
+    failed_errors: List[str] = []
+    included: List[str] = []
+
+    for url, title, extracted, err in results:
+        if err or not extracted:
+            failed_errors.append(f"{url}: {err or 'empty content'}")
+            continue
+        if total_chars >= MAX_TOPIC_TOTAL_CHARS:
+            failed_errors.append(f"{url}: skipped (corpus budget exhausted)")
+            continue
+
+        header_path = url
+        if title:
+            header_path = f"{url}  [{title}]"
+
+        block = f"\n{'='*60}\nFILE: {header_path}\n{'='*60}\n{extracted}\n"
+        if total_chars + len(block) > MAX_TOPIC_TOTAL_CHARS:
+            remaining = MAX_TOPIC_TOTAL_CHARS - total_chars
+            if remaining < 500:
+                failed_errors.append(f"{url}: skipped (corpus budget exhausted)")
+                continue
+            block = block[:remaining] + f"\n[... truncated to fit corpus budget ...]\n"
+
+        blocks.append(block)
+        total_chars += len(block)
+        successful += 1
+        included.append(url)
+
+    summary = {
+        "total": len(clean_urls),
+        "successful": successful,
+        "failed": len(clean_urls) - successful,
+        "errors": failed_errors,
+        "urls_included": included,
+        "total_chars": total_chars,
+    }
+    return "".join(blocks), summary
+
+
+def build_topic_context(
+    topic: str,
+    url_context: str,
+    repo_context: str = "",
+    user_notes: str = "",
+) -> str:
+    """
+    Assemble a single code_context string for topic mode.
+
+    Layout (top-down, highest priority first so preamble survives truncation):
+      1. Topic framing block (preamble — persona filter keeps it via __preamble__)
+      2. User notes (optional)
+      3. Scraped URL sources (file-block format)
+      4. Optional repo source files (file-block format)
+    """
+    parts: List[str] = []
+
+    framing = (
+        f"====TOPIC BRIEF====\n"
+        f"Topic: {topic}\n"
+    )
+    if user_notes.strip():
+        framing += f"\nAdditional notes from the requesting team:\n{user_notes.strip()}\n"
+    framing += (
+        "\nThe sources below are the evidence base for this investigation. "
+        "You are NOT being asked to audit them — you are being asked to produce a "
+        "plan to deliver the topic above, using these sources as authoritative "
+        "context alongside your own research.\n"
+        "====END TOPIC BRIEF====\n"
+    )
+    parts.append(framing)
+
+    if url_context:
+        parts.append(url_context)
+    if repo_context:
+        parts.append(repo_context)
+
+    return "\n".join(parts)
 
 
 # ─────────────────────────────────────────────
@@ -1312,9 +1750,16 @@ async def run_single_agent(
     code_context: str,
     client_context: str = "",
     db_persona_prompts: str = "",
-    status_callback: Optional[callable] = None
+    status_callback: Optional[callable] = None,
+    topic: str = "",
 ) -> Dict[str, Any]:
-    """Run a single persona agent with granular status updates."""
+    """Run a single persona agent with granular status updates.
+
+    When `topic` is provided (topic mode), a PRIMARY DIRECTIVE block is injected
+    at the top of the prompt so every agent reframes its work: instead of
+    auditing the supplied material, it produces a plan to deliver the topic
+    using the material as authoritative context.
+    """
     config = PERSONA_CONFIGS[persona_key]
     model_type = config.get("model", "gemini")
 
@@ -1360,8 +1805,48 @@ async def run_single_agent(
 - Be honest about vendor lock-in, maturity risks, and when NOT to use AI/low-code — the goal is the right tool, not the newest tool
 - Challenge every "we need to build this" assumption — ask whether a SaaS, an API, or an AI agent could replace months of custom engineering"""
 
-    prompt = f"""You are the **{config['name']}** on a Shift-Left Discovery panel.
+    # Topic mode re-frames the entire job: the agent is planning a build against a goal,
+    # not forensically auditing an existing codebase.
+    if topic:
+        topic_directive = f"""
+=== INVESTIGATION TOPIC (PRIMARY DIRECTIVE) ===
+{topic}
 
+You are NOT auditing the material below. You are producing a plan to DELIVER the
+topic above, from the perspective of your role. Treat the scraped URLs and any
+supplied source files as authoritative context / evidence — facts about the
+problem space, existing platforms, target technologies, related solutions — and
+combine them with your own research to produce a forensically specific plan.
+
+Where you would normally reference 'file paths and function names', instead
+reference specific source URLs, documented features, and named platform concepts.
+Your deliverables shape and headings stay the same — you are still producing
+your role's standard artifacts, but tuned to a forward-looking build rather than
+a retrospective audit.
+=== END INVESTIGATION TOPIC ===
+"""
+        source_label = "RESEARCH MATERIAL (scraped sources + optional reference code)"
+        closing_directive = (
+            "Now produce your analysis. Be forensically specific — reference actual "
+            "sources, named concepts, platform features, and documented patterns you "
+            "observed in the research material. Write with the authority and precision "
+            "of the world's best practitioner in your role. Every recommendation must "
+            "be actionable, grounded in your research, and tailored to what is "
+            "required to deliver THIS topic for THIS client."
+        )
+    else:
+        topic_directive = ""
+        source_label = "CODEBASE"
+        closing_directive = (
+            "Now produce your analysis. Be forensically specific — reference actual "
+            "file paths, function names, and line-level patterns you observed. Write "
+            "with the authority and precision of the world's best practitioner in your "
+            "role. Every recommendation must be actionable, grounded in your research, "
+            "and tailored to what you specifically found in THIS codebase."
+        )
+
+    prompt = f"""You are the **{config['name']}** on a Shift-Left Discovery panel.
+{topic_directive}
 {config['system_prompt']}
 
 {research_mandate}
@@ -1369,13 +1854,13 @@ async def run_single_agent(
 {f"Additional context from database personas: {db_persona_prompts}" if db_persona_prompts else ""}
 {f"Client context: {client_context}" if client_context else ""}
 
-Below is the codebase you are analysing. Study every file carefully, then produce your deliverables.
+Below is the {source_label.lower()} you are working from. Study every section carefully, then produce your deliverables.
 
---- BEGIN CODEBASE ---
+--- BEGIN {source_label} ---
 {code_context}
---- END CODEBASE ---
+--- END {source_label} ---
 
-Now produce your analysis. Be forensically specific — reference actual file paths, function names, and line-level patterns you observed. Write with the authority and precision of the world's best practitioner in your role. Every recommendation must be actionable, grounded in your research, and tailored to what you specifically found in THIS codebase."""
+{closing_directive}"""
 
     # ── Persona-aware context filtering ────────────────────────────────────────
     # Filter and rank files by relevance to this persona's domain before building
@@ -1392,14 +1877,15 @@ Now produce your analysis. Be forensically specific — reference actual file pa
 
     # Rebuild prompt with persona-filtered context
     prompt = prompt.replace(
-        f"--- BEGIN CODEBASE ---\n{code_context}\n--- END CODEBASE ---",
-        f"--- BEGIN CODEBASE ---\n{filtered_context}\n--- END CODEBASE ---"
+        f"--- BEGIN {source_label} ---\n{code_context}\n--- END {source_label} ---",
+        f"--- BEGIN {source_label} ---\n{filtered_context}\n--- END {source_label} ---"
     )
 
-    async def call_gemini(reason: str = "") -> str:
-        """Run this agent on Gemini (primary path or fallback)."""
-        label = f"Researching Best Practices (Gemini){' — Claude fallback' if reason else ''}..."
-        await update_status(label)
+    # Mutable container for usage data captured by whichever provider runs.
+    _agent_usage: Dict[str, Any] = {}
+
+    async def _call_gemini_raw() -> str:
+        """Direct Gemini call — raises on any failure (caller decides whether to fall back)."""
         gemini_client = genai.Client(api_key=gemini_api_key)
         grounding_tool = types.Tool(google_search=types.GoogleSearch())
         response = await gemini_client.aio.models.generate_content(
@@ -1410,7 +1896,69 @@ Now produce your analysis. Be forensically specific — reference actual file pa
                 temperature=0.3
             ),
         )
+        _agent_usage.update(_extract_gemini_usage(response))
         return response.text
+
+    async def call_gemini(reason: str = "") -> str:
+        """
+        Run this agent on Gemini (primary path or Anthropic-fallback path).
+        If Gemini fails AND an Anthropic key is available, transparently falls back
+        to Claude Sonnet 4.6 with the same prompt (minus live grounding).
+        """
+        label = f"Researching Best Practices (Gemini){' — Claude fallback' if reason else ''}..."
+        await update_status(label)
+        try:
+            return await _call_gemini_raw()
+        except Exception as gemini_err:
+            err_kind = _classify_gemini_error(gemini_err)
+            logger.warning(
+                f"[{persona_key}] Gemini {err_kind} failure: {gemini_err!r}. "
+                f"{'Falling back to Claude.' if anthropic_api_key else 'No Anthropic fallback available — re-raising.'}"
+            )
+            if not anthropic_api_key:
+                raise
+            await update_status(
+                f"Gemini {err_kind} — falling back to Claude (no live grounding)..."
+            )
+            try:
+                text, fallback_usage = await _run_prompt_on_anthropic(prompt, anthropic_api_key)
+                _agent_usage.update(fallback_usage)
+                return text
+            except Exception as anthropic_err:
+                logger.error(
+                    f"[{persona_key}] Anthropic fallback also failed: {anthropic_err!r}. "
+                    f"Re-raising original Gemini error."
+                )
+                raise gemini_err
+
+    # ── Prompt caching: build structured system blocks for Anthropic ──────
+    # The research mandate + recon + materials context is identical across all
+    # Anthropic agents in a single run → we mark it with cache_control so the
+    # Anthropic API can reuse the KV-cache prefix across sequential calls.
+    _system_cache_prefix = research_mandate
+    if db_persona_prompts:
+        _system_cache_prefix += f"\n\nAdditional context from database personas:\n{db_persona_prompts}"
+    if client_context:
+        _system_cache_prefix += f"\n\nClient context: {client_context}"
+
+    _anthropic_system = [
+        {"type": "text", "text": _system_cache_prefix.strip(),
+         "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": (
+            f"You are the **{config['name']}** on a Shift-Left Discovery panel.\n"
+            f"{config['system_prompt']}"
+        )},
+    ]
+
+    # User message for Anthropic: topic directive (if any) + code context + closing.
+    _anthropic_user = (
+        f"{topic_directive}\n" if topic_directive else ""
+    ) + (
+        f"Below is the {source_label.lower()} you are working from. "
+        f"Study every section carefully, then produce your deliverables.\n\n"
+        f"--- BEGIN {source_label} ---\n{filtered_context}\n--- END {source_label} ---\n\n"
+        f"{closing_directive}"
+    )
 
     try:
         await update_status("Analyzing Source Code...")
@@ -1434,10 +1982,11 @@ Now produce your analysis. Be forensically specific — reference actual file pa
                             model="claude-sonnet-4-6",
                             max_tokens=4096,
                             temperature=0.3,
-                            system="You are a senior technical discovery agent. Provide deep, structured analysis.",
-                            messages=[{"role": "user", "content": prompt}]
+                            system=_anthropic_system,
+                            messages=[{"role": "user", "content": _anthropic_user}]
                         )
                         content = message.content[0].text
+                        _agent_usage.update(_extract_anthropic_usage(message))
                         break  # Success — exit retry loop
 
                 except anthropic.RateLimitError as e:
@@ -1480,7 +2029,8 @@ Now produce your analysis. Be forensically specific — reference actual file pa
             "name": config["name"],
             "emoji": config["emoji"],
             "status": "success",
-            "content": content
+            "content": content,
+            "usage": _agent_usage,
         }
     except Exception as e:
         return {
@@ -1488,7 +2038,8 @@ Now produce your analysis. Be forensically specific — reference actual file pa
             "name": config["name"],
             "emoji": config["emoji"],
             "status": "error",
-            "content": f"Agent error ({model_type}): {str(e)}"
+            "content": f"Agent error ({model_type}): {str(e)}",
+            "usage": _agent_usage,
         }
 
 
@@ -1507,16 +2058,34 @@ SYNTHESIS_CONFIG = {
 async def run_synthesis_agent(
     collected_results: Dict[str, str],
     anthropic_api_key: str,
+    model: str = SYNTHESIS_MODEL_SONNET,
+    escalation_reason: str = "",
+    cross_domain_flags: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
-    """Read all persona reports and produce a CTO-level master action plan with 3 strategic paths."""
+    """Read all persona reports and produce a CTO-level master action plan with 3 strategic paths.
+
+    `model` defaults to Sonnet but callers may pass `SYNTHESIS_MODEL_OPUS` to
+    escalate (e.g. via `should_escalate_to_opus()`). Opus runs use a larger
+    thinking budget and output budget — they're already paying ~5x cost,
+    might as well give the model room to reason.
+
+    `escalation_reason` is a short human-readable string (e.g. "5 agents at
+    low confidence") that is preserved on the returned dict so the caller
+    can yield it as an SSE event for the UI.
+    """
     if not anthropic_api_key:
         return {
             "persona": "synthesis",
             "name": SYNTHESIS_CONFIG["name"],
             "emoji": SYNTHESIS_CONFIG["emoji"],
             "status": "error",
-            "content": "Synthesis requires the Anthropic API key (ANTHROPIC_API_KEY) to be set in .env."
+            "content": "Synthesis requires the Anthropic API key (ANTHROPIC_API_KEY) to be set in .env.",
+            "model": model,
+            "escalated": False,
+            "escalation_reason": "",
         }
+
+    is_opus = "opus" in model.lower()
 
     agent_names = {k: v["name"] for k, v in PERSONA_CONFIGS.items()}
     all_reports = "\n\n".join([
@@ -1526,13 +2095,31 @@ async def run_synthesis_agent(
     ])
 
     agent_count = len(collected_results)
+
+    # Phase 9 — Cross-Domain Flags. Render the flag roster (if any) into a
+    # binding block injected after the agent reports. The synthesis MUST
+    # explicitly resolve each flag rather than letting them silently pass.
+    flags_block = format_cross_domain_flags_for_synthesis(
+        cross_domain_flags or [],
+        persona_configs=PERSONA_CONFIGS,
+    )
+    flags_section = f"\n\n{flags_block}\n" if flags_block else ""
+    flags_clause = ""
+    if cross_domain_flags:
+        flags_clause = (
+            f"\n\n**CRITICAL**: {len(cross_domain_flags)} cross-domain flag(s) were raised "
+            "between agents during the parallel run (see the dedicated section below). "
+            "Your verdict MUST explicitly address each one — name the flag, give your "
+            "ruling, and assign accountability. Do not let any flag pass silently."
+        )
+
     prompt = f"""You have received independent analysis reports from a {agent_count}-agent expert panel — each a world-class specialist who has deeply analysed the same codebase. Your role is Chief Technology Officer and Principal Advisor.
 
-Read ALL reports below. Your job is to synthesise their findings, resolve contradictions, identify the highest-confidence themes, close blind spots, and produce a single authoritative Master Report.
+Read ALL reports below. Your job is to synthesise their findings, resolve contradictions, identify the highest-confidence themes, close blind spots, and produce a single authoritative Master Report.{flags_clause}
 
 --- ALL {agent_count} AGENT REPORTS ---
 {all_reports}
---- END OF ALL REPORTS ---
+--- END OF ALL REPORTS ---{flags_section}
 
 Now produce your Master Report with EXACTLY these sections:
 
@@ -1544,6 +2131,15 @@ List every finding that three or more agents independently identified — these 
 
 ### Cross-Agent Contradictions Resolved
 Identify where agents disagreed (e.g. Performance recommending aggressive caching vs Security flagging it as a risk vector). For each contradiction: state it clearly, give your definitive recommendation, and explain the reasoning.
+
+### Cross-Domain Flag Resolutions
+For EACH cross-domain flag raised in the dedicated section above, write a short ruling. Use this format:
+
+> **[Source Agent → Target Agent]** *Flag summary*
+> **Ruling**: Your binding decision (must address / defer to phase X / dismiss with reason / requires user input).
+> **Owner**: Which path/team picks this up.
+
+If no cross-domain flags were raised, write "No cross-domain flags surfaced in this run." and move on. Do NOT skip this section silently.
 
 ### Blind Spots — What the Panel Missed
 2–3 important considerations that the agent panel collectively missed or underweighted. These are often the risks that cause modernisation programmes to fail.
@@ -1605,18 +2201,30 @@ If this organisation can only do THREE things this quarter, what are they and ex
     # Extended thinking is enabled: the model reasons through contradictions in
     # a private scratchpad (budget_tokens) before writing its final answer.
     # temperature must be 1 when thinking is enabled (API requirement).
-    THINKING_BUDGET = 8000   # tokens for internal reasoning
-    OUTPUT_BUDGET = 10000    # tokens for the final written report
+    # Opus gets a larger thinking + output budget — we're already paying 5x.
+    THINKING_BUDGET = ESCALATE_THINKING_BUDGET if is_opus else 8000
+    OUTPUT_BUDGET   = ESCALATE_OUTPUT_BUDGET if is_opus else 10000
+
+    # Prompt caching: the system instruction is identical across re-runs.
+    synthesis_system = [
+        {"type": "text", "text": (
+            "You are a Principal CTO and technical advisor synthesising expert "
+            "panel findings into a unified master action plan. Be authoritative, "
+            "specific, and decisive. Resolve contradictions explicitly. Name "
+            "files, tools, and patterns by name."
+        ), "cache_control": {"type": "ephemeral"}},
+    ]
+
     last_error = None
     for attempt in range(1, ANTHROPIC_MAX_RETRIES + 1):
         try:
             client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
             message = await client.messages.create(
-                model="claude-sonnet-4-6",
+                model=model,
                 max_tokens=THINKING_BUDGET + OUTPUT_BUDGET,
                 temperature=1,  # Required when extended thinking is enabled
                 thinking={"type": "enabled", "budget_tokens": THINKING_BUDGET},
-                system="You are a Principal CTO and technical advisor synthesising expert panel findings into a unified master action plan. Be authoritative, specific, and decisive. Resolve contradictions explicitly. Name files, tools, and patterns by name.",
+                system=synthesis_system,
                 messages=[{"role": "user", "content": prompt}]
             )
             # Extract only the final text blocks — discard thinking scratchpad
@@ -1629,7 +2237,11 @@ If this organisation can only do THREE things this quarter, what are they and ex
                 "name": SYNTHESIS_CONFIG["name"],
                 "emoji": SYNTHESIS_CONFIG["emoji"],
                 "status": "success",
-                "content": content
+                "content": content,
+                "usage": _extract_anthropic_usage(message, model=model),
+                "model": model,
+                "escalated": is_opus,
+                "escalation_reason": escalation_reason if is_opus else "",
             }
 
         except (anthropic.RateLimitError, anthropic.APIStatusError) as e:
@@ -1647,7 +2259,10 @@ If this organisation can only do THREE things this quarter, what are they and ex
                     "name": SYNTHESIS_CONFIG["name"],
                     "emoji": SYNTHESIS_CONFIG["emoji"],
                     "status": "error",
-                    "content": f"Synthesis error after {attempt} attempts: {str(e)}"
+                    "content": f"Synthesis error after {attempt} attempts: {str(e)}",
+                    "model": model,
+                    "escalated": is_opus,
+                    "escalation_reason": escalation_reason if is_opus else "",
                 }
 
         except Exception as e:
@@ -1656,7 +2271,10 @@ If this organisation can only do THREE things this quarter, what are they and ex
                 "name": SYNTHESIS_CONFIG["name"],
                 "emoji": SYNTHESIS_CONFIG["emoji"],
                 "status": "error",
-                "content": f"Synthesis error: {str(e)}"
+                "content": f"Synthesis error: {str(e)}",
+                "model": model,
+                "escalated": is_opus,
+                "escalation_reason": escalation_reason if is_opus else "",
             }
 
     return {
@@ -1664,13 +2282,1277 @@ If this organisation can only do THREE things this quarter, what are they and ex
         "name": SYNTHESIS_CONFIG["name"],
         "emoji": SYNTHESIS_CONFIG["emoji"],
         "status": "error",
-        "content": f"Synthesis failed after {ANTHROPIC_MAX_RETRIES} retries: {str(last_error)}"
+        "content": f"Synthesis failed after {ANTHROPIC_MAX_RETRIES} retries: {str(last_error)}",
+        "model": model,
+        "escalated": is_opus,
+        "escalation_reason": escalation_reason if is_opus else "",
     }
+
+
+# ─────────────────────────────────────────────
+# Phase 6 — Confidence Probe & Cross-Agent Briefing
+# ─────────────────────────────────────────────
+
+_CONFIDENCE_PROBE_PROMPT = """You are the **{agent_name}** ({agent_role}).
+
+BEFORE producing any analysis, perform an honest self-assessment.
+
+You are about to analyse {context_kind}. Your job is to produce SPECIFIC, ACTIONABLE recommendations — not textbook generalities. A real team will use your output to plan their next sprint.
+
+{topic_block}
+
+Review the context below and answer honestly:
+
+--- BEGIN CONTEXT SAMPLE ---
+{context_sample}
+--- END CONTEXT SAMPLE ---
+
+{recon_block}
+
+Return ONLY valid JSON (no markdown fences, no prose):
+{{
+  "confidence": "high|medium|low",
+  "confident_about": ["3-5 specific things about THIS context you can give precise, actionable advice on"],
+  "gaps": ["Specific knowledge gaps that would make your advice generic or possibly wrong. Be precise — 'I don't know ODC reactive web patterns' is better than 'I have some gaps'."],
+  "questions_for_user": ["1-3 specific questions whose answers would MEANINGFULLY improve your analysis. These should be things the team would know but aren't visible in the code/material. Ask ONLY if the answer would actually change your recommendations. Empty array if none needed."],
+  "research_needed": ["Specific topics you would Google/research if given the chance — documentation pages, version-specific guides, comparison articles"],
+  "consult_agents": ["persona_key of other agents on this panel whose expertise would help fill YOUR gaps — e.g. 'outsystems_architect' if you need platform-specific knowledge"],
+  "preliminary_findings": ["2-3 of your strongest, most confident observations about this codebase/topic — things you are SURE about. These will be shared with other agents who need help."]
+}}
+
+IMPORTANT:
+- "high" means you could advise a real team TOMORROW with specific file paths, tool versions, and named patterns.
+- "medium" means you understand the broad domain but would mix specific and generic advice.
+- "low" means you'd be guessing at specifics. Be honest — a low rating gets you more research time, not a penalty.
+- questions_for_user should be EMPTY if you genuinely don't need user input. Don't ask filler questions.
+"""
+
+
+async def run_confidence_probe(
+    persona_key: str,
+    gemini_api_key: str,
+    anthropic_api_key: str,
+    code_context: str,
+    recon_data: Optional[Dict[str, Any]] = None,
+    topic: str = "",
+) -> Dict[str, Any]:
+    """
+    Fast confidence probe for a single agent. Returns structured JSON with
+    confidence level, gaps, questions, and preliminary findings.
+
+    Runs on the agent's native model (Gemini or Anthropic) with minimal tokens.
+    """
+    config = PERSONA_CONFIGS[persona_key]
+    model_type = config.get("model", "gemini")
+
+    # Build a truncated context sample — probes don't need the full codebase.
+    # 15K chars ≈ 4K tokens — enough to assess the stack, not enough to rack up cost.
+    context_sample = code_context[:15_000]
+    if len(code_context) > 15_000:
+        context_sample += f"\n\n[... truncated at 15,000 of {len(code_context):,} chars for confidence probe ...]"
+
+    recon_block = ""
+    if recon_data and recon_data.get("raw_summary"):
+        recon_block = f"## Codebase Reconnaissance Summary (verified facts)\n{recon_data['raw_summary']}"
+
+    topic_block = ""
+    context_kind = "this codebase"
+    if topic:
+        topic_block = f"## TOPIC / INVESTIGATION BRIEF\n{topic}\n"
+        context_kind = f"the topic: '{topic[:100]}'"
+
+    prompt = _CONFIDENCE_PROBE_PROMPT.format(
+        agent_name=config["name"],
+        agent_role=persona_key,
+        context_kind=context_kind,
+        topic_block=topic_block,
+        context_sample=context_sample,
+        recon_block=recon_block,
+    )
+
+    default_result = {
+        "persona_key": persona_key,
+        "name": config["name"],
+        "emoji": config.get("emoji", ""),
+        "confidence": "medium",
+        "confident_about": [],
+        "gaps": [],
+        "questions_for_user": [],
+        "research_needed": [],
+        "consult_agents": [],
+        "preliminary_findings": [],
+    }
+
+    def _parse(raw: str) -> dict:
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        try:
+            d = json.loads(raw.strip())
+        except json.JSONDecodeError:
+            # Try extracting JSON from within prose.
+            m = re.search(r'\{[\s\S]*\}', raw)
+            if m:
+                d = json.loads(m.group())
+            else:
+                return {**default_result, "raw_response": raw}
+        return {**default_result, **d}
+
+    try:
+        if model_type == "gemini" and gemini_api_key:
+            client = genai.Client(api_key=gemini_api_key)
+            response = await client.aio.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    temperature=0.1,
+                ),
+            )
+            return _parse(response.text)
+        elif anthropic_api_key:
+            text, _usage = await _run_prompt_on_anthropic(
+                prompt, anthropic_api_key,
+                max_tokens=800,
+                temperature=0.1,
+                system="You are a confidence self-assessment agent. Return valid JSON only.",
+            )
+            return _parse(text)
+        else:
+            return default_result
+    except Exception as e:
+        logger.warning(f"Confidence probe failed for {persona_key}: {e}")
+        return {**default_result, "error": str(e)}
+
+
+async def run_all_confidence_probes(
+    active_personas: Dict[str, Dict],
+    gemini_api_key: str,
+    anthropic_api_key: str,
+    code_context: str,
+    recon_data: Optional[Dict[str, Any]] = None,
+    topic: str = "",
+) -> Dict[str, Dict]:
+    """Run confidence probes for all active personas in parallel. Returns {persona_key: probe_result}."""
+    tasks = {}
+    for key in active_personas:
+        tasks[key] = asyncio.create_task(
+            run_confidence_probe(key, gemini_api_key, anthropic_api_key, code_context, recon_data, topic)
+        )
+    results = {}
+    for key, task in tasks.items():
+        try:
+            results[key] = await task
+        except Exception as e:
+            logger.warning(f"Confidence probe task failed for {key}: {e}")
+            results[key] = {
+                "persona_key": key,
+                "name": active_personas[key].get("name", key),
+                "confidence": "medium",
+                "gaps": [],
+                "questions_for_user": [],
+                "preliminary_findings": [],
+                "consult_agents": [],
+                "error": str(e),
+            }
+    return results
+
+
+def build_cross_agent_briefing(probe_results: Dict[str, Dict]) -> str:
+    """
+    Compile preliminary findings from HIGH-confidence agents into a shared
+    briefing block that enriches LOW/MEDIUM-confidence agents' prompts.
+    """
+    lines = []
+    for key, probe in probe_results.items():
+        if probe.get("confidence") != "high":
+            continue
+        findings = probe.get("preliminary_findings", [])
+        if not findings:
+            continue
+        name = probe.get("name", key)
+        lines.append(f"### {name} (high confidence)")
+        for f in findings:
+            lines.append(f"- {f}")
+        lines.append("")
+
+    if not lines:
+        return ""
+    return (
+        "## Cross-Agent Briefing — Preliminary Findings from High-Confidence Agents\n"
+        "The following agents assessed themselves as highly confident and shared their "
+        "strongest observations. Use these as validated starting points.\n\n"
+        + "\n".join(lines)
+    )
+
+
+def build_user_answers_block(user_answers: Dict[str, Any]) -> str:
+    """
+    Format user-provided answers, URLs, and extra context into a prompt block
+    that gets injected into every agent's context.
+    """
+    if not user_answers:
+        return ""
+
+    lines = ["## User-Provided Answers (from confidence Q&A)"]
+
+    # Direct answers to specific questions
+    qa_pairs = user_answers.get("answers", {})
+    for persona_key, answer_text in qa_pairs.items():
+        if answer_text and str(answer_text).strip():
+            name = PERSONA_CONFIGS.get(persona_key, {}).get("name", persona_key)
+            lines.append(f"\n**In response to {name}'s question:**\n{answer_text}")
+
+    # Global answers (not tied to a specific agent)
+    global_answer = user_answers.get("global_answer", "")
+    if global_answer and global_answer.strip():
+        lines.append(f"\n**Additional context from the user:**\n{global_answer}")
+
+    # Extra URLs that were fetched
+    fetched_urls = user_answers.get("fetched_content", {})
+    for url, content in fetched_urls.items():
+        lines.append(f"\n**Content from {url}:**\n{content[:8000]}")
+
+    if len(lines) <= 1:
+        return ""
+    return "\n".join(lines) + "\n"
+
+
+# ═══════════════════════════════════════════════════════════════
+# Phase 9 — Cross-Domain Flag Routing (inter-agent communication)
+# ═══════════════════════════════════════════════════════════════
+#
+# Agents currently run fully in parallel and never see each other's output
+# until synthesis. This means the Security Engineer can't tell the Performance
+# Engineer that the crypto in checkout/ is a perf killer; the QA Lead can't
+# warn the Architect that the test framework is incompatible with the proposed
+# rebuild approach.
+#
+# The fix without doubling fleet cost: ask every agent to end with a structured
+# CROSS-DOMAIN FLAGS block. We parse those flags after the fleet completes and
+# inject them into synthesis as binding cross-cutting concerns the verdict MUST
+# address. This is one-pass mid-run communication — flags fire before synthesis,
+# not before other agents — but synthesis becomes the explicit forum where
+# inter-agent communication is resolved.
+
+CROSS_DOMAIN_FLAGS_INSTRUCTION = """## Cross-Domain Flag Protocol (REQUIRED — final section of your report)
+
+If — and only if — you found something during your analysis that critically
+affects another domain, end your report with EXACTLY this section:
+
+## 🔥 CROSS-DOMAIN FLAGS
+
+- **[TARGET_DOMAIN]** Brief description (1 sentence). Why this domain must address it.
+- **[TARGET_DOMAIN]** Brief description (1 sentence). Why this domain must address it.
+
+Rules:
+- Use 0-3 flags. Quality > quantity. If nothing critically crosses domains, OMIT
+  the section entirely. Do not invent flags to look thorough.
+- TARGET_DOMAIN must be one of: SECURITY, PERFORMANCE, COMPLIANCE, DEVOPS, QA,
+  ARCHITECT, DATA, COST, UX, BA, PM, TECH_LEAD, API_DESIGN, AI_INNOVATION,
+  OUTSYSTEMS, SECOPS, TECH_DOCS.
+- Flag only findings that materially change what the target domain should
+  recommend — not nice-to-knows. Examples: "Performance bottleneck IS a
+  security vulnerability." "Cost-cutting suggestion would violate compliance."
+  "Architecture proposal breaks the QA strategy."
+- Do NOT flag yourself. Do NOT flag findings already obvious from the codebase
+  scan (e.g. "no tests" — QA already saw that).
+
+These flags are aggregated and routed into the synthesis pass as binding
+cross-cutting concerns the final verdict must explicitly resolve.
+"""
+
+
+# Match e.g. `## 🔥 CROSS-DOMAIN FLAGS` or `## CROSS-DOMAIN FLAGS` (emoji-optional).
+_CROSS_DOMAIN_HEADER = re.compile(
+    r"^##\s*(?:🔥\s*)?CROSS[-\s]DOMAIN\s+FLAGS\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+# Match a flag bullet: `- **[TARGET]** ...`. Tolerant of *single* asterisks,
+# missing brackets, and both `-` and `*` bullets.
+_FLAG_BULLET = re.compile(
+    r"""^\s*[-*]\s*           # bullet
+        \*{1,2}\s*\[?\s*       # opening ** or * + optional [
+        ([A-Z_/ ]+?)           # TARGET — capital letters/underscore
+        \s*\]?\s*\*{1,2}       # optional ] + closing
+        [:\s]*                 # optional colon/space
+        (.+?)\s*$              # the actual message
+    """,
+    re.VERBOSE | re.MULTILINE,
+)
+
+# Map free-form target tokens emitted by agents to canonical persona keys.
+# Agents sometimes write "DEVOPS" or "DevOps" or "DEVOPS/SRE" — normalise.
+_FLAG_TARGET_ALIASES = {
+    "SECURITY": "security",
+    "SECURITY ENGINEER": "security",
+    "PERFORMANCE": "performance_engineer",
+    "PERF": "performance_engineer",
+    "PERFORMANCE ENGINEER": "performance_engineer",
+    "COMPLIANCE": "compliance",
+    "PRIVACY": "compliance",
+    "DEVOPS": "devops",
+    "DEVOPS/SRE": "devops",
+    "SRE": "devops",
+    "QA": "qa",
+    "QA LEAD": "qa",
+    "ARCHITECT": "architect",
+    "SOLUTIONS ARCHITECT": "architect",
+    "ARCHITECTURE": "architect",
+    "DATA": "data_engineering",
+    "DATA ENGINEERING": "data_engineering",
+    "DATA ENGINEER": "data_engineering",
+    "COST": "cost_analyst",
+    "COST ANALYST": "cost_analyst",
+    "FINOPS": "cost_analyst",
+    "UX": "ui_ux",
+    "UI/UX": "ui_ux",
+    "UI": "ui_ux",
+    "DESIGN": "ui_ux",
+    "BA": "ba",
+    "BUSINESS ANALYST": "ba",
+    "PM": "product_management",
+    "PRODUCT": "product_management",
+    "PRODUCT MANAGER": "product_management",
+    "PRODUCT MANAGEMENT": "product_management",
+    "TECH_LEAD": "tech_lead",
+    "TECH LEAD": "tech_lead",
+    "TECHLEAD": "tech_lead",
+    "API_DESIGN": "api_designer",
+    "API": "api_designer",
+    "API DESIGNER": "api_designer",
+    "AI_INNOVATION": "ai_innovation_scout",
+    "AI INNOVATION": "ai_innovation_scout",
+    "AI INNOVATION SCOUT": "ai_innovation_scout",
+    "AI": "ai_innovation_scout",
+    "OUTSYSTEMS": "outsystems_architect",
+    "OUTSYSTEMS ARCHITECT": "outsystems_architect",
+    "ODC": "outsystems_architect",
+    "OUTSYSTEMS MIGRATION": "outsystems_migration",
+    "SECOPS": "secops",
+    "DEVSECOPS": "secops",
+    "TECH_DOCS": "tech_docs",
+    "TECH DOCS": "tech_docs",
+    "TECHNICAL WRITER": "tech_docs",
+    "DOCS": "tech_docs",
+    "DOCUMENTATION": "tech_docs",
+}
+
+
+def parse_cross_domain_flags(
+    collected_results: Dict[str, str],
+) -> List[Dict[str, str]]:
+    """Extract CROSS-DOMAIN FLAGS sections from each agent's report.
+
+    Returns a list of dicts: `{from_agent, target_raw, target_key, message}`.
+    `target_key` is the canonical persona key (or "" if the target couldn't
+    be normalised — useful as a soft signal in synthesis even if no specific
+    persona matches).
+
+    Pure parser. No API calls. Resilient to malformed agent output:
+    - Missing section → no flags
+    - Empty section → no flags
+    - Bullets without targets → silently skipped
+    - Self-flags (Security flagging Security) → silently skipped
+    """
+    flags: List[Dict[str, str]] = []
+    for agent_key, content in (collected_results or {}).items():
+        if not content or not isinstance(content, str):
+            continue
+        m = _CROSS_DOMAIN_HEADER.search(content)
+        if not m:
+            continue
+        # Take everything from the header to the next H2 (or EOF).
+        tail = content[m.end():]
+        # Stop at the next ## header so we don't bleed into adjacent sections.
+        next_h2 = re.search(r"^##\s+\S", tail, re.MULTILINE)
+        section = tail[: next_h2.start()] if next_h2 else tail
+
+        for bullet in _FLAG_BULLET.finditer(section):
+            target_raw = (bullet.group(1) or "").strip().upper()
+            message = (bullet.group(2) or "").strip()
+            if not target_raw or not message:
+                continue
+            target_key = _FLAG_TARGET_ALIASES.get(target_raw, "")
+            # Skip self-flags — agents shouldn't flag themselves.
+            if target_key and target_key == agent_key:
+                continue
+            flags.append({
+                "from_agent": agent_key,
+                "target_raw": target_raw,
+                "target_key": target_key,
+                "message": message,
+            })
+    return flags
+
+
+def format_cross_domain_flags_for_synthesis(
+    flags: List[Dict[str, str]],
+    persona_configs: Optional[Dict[str, Dict]] = None,
+) -> str:
+    """Render the flag list into a prompt block for the synthesis agent.
+
+    The verdict is told to explicitly resolve each flag — no silent
+    pass-through. We sort by target so synthesis can scan domain-by-domain.
+    """
+    if not flags:
+        return ""
+
+    name_for = {}
+    for k, cfg in (persona_configs or {}).items():
+        name_for[k] = cfg.get("name", k)
+
+    # Group by target persona for easier reading.
+    by_target: Dict[str, List[Dict[str, str]]] = {}
+    for f in flags:
+        key = f.get("target_key") or f.get("target_raw") or "UNKNOWN"
+        by_target.setdefault(key, []).append(f)
+
+    lines = [
+        "## 🔥 CROSS-DOMAIN FLAGS (BINDING — must be addressed in synthesis)",
+        "",
+        f"During parallel analysis, agents raised {len(flags)} cross-domain flag(s) — findings",
+        "from one specialist that critically affect another domain. You MUST explicitly address",
+        "each flag below in your verdict. Do NOT let any flag pass without resolution.",
+        "",
+    ]
+    for target, entries in by_target.items():
+        target_label = name_for.get(target, target.replace("_", " ").title())
+        lines.append(f"### Flagged for: {target_label}")
+        for f in entries:
+            from_label = name_for.get(f["from_agent"], f["from_agent"])
+            lines.append(f"- **From {from_label}**: {f['message']}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+# Match the synthesis output section that resolves cross-domain flags. The
+# synthesis prompt asks Sonnet/Opus to write `### Cross-Domain Flag Resolutions`
+# but real models sometimes produce variants — capture them all.
+_FLAG_RESOLUTIONS_HEADER = re.compile(
+    r"^#{2,4}\s*Cross[-\s]Domain\s+Flag\s+Resolutions?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# A resolution block usually looks like:
+#   > **[Source → Target]** *Flag summary*
+#   > **Ruling**: ...
+#   > **Owner**: ...
+# but we tolerate a lot of formatting drift. The strategy:
+#   1. Find the resolutions section
+#   2. Split into resolution blocks separated by blank lines or `>` runs
+#   3. For each block, extract source/target hints, ruling, owner
+# Then we fuzzy-match each parsed resolution to the original flag list by
+# (from_agent, target, message-similarity) so the frontend can display the
+# ruling next to the original flag.
+
+_RESOLUTION_RULING = re.compile(
+    r"\*{1,2}\s*Ruling\s*\*{1,2}\s*[:\-]\s*(.+?)(?=\n\s*[\*>>]|\n\n|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+_RESOLUTION_OWNER = re.compile(
+    r"\*{1,2}\s*Owner\s*\*{1,2}\s*[:\-]\s*(.+?)(?=\n|\Z)",
+    re.IGNORECASE,
+)
+# Match the source/target header. Tolerates [SRC -> TGT], [SRC → TGT],
+# [Source: SRC, Target: TGT] and similar variants.
+_RESOLUTION_HEADER = re.compile(
+    r"""\*{1,2}\s*\[?\s*
+        ([A-Za-z_/ ]+?)            # source agent / domain name
+        \s*(?:→|->|to|→)\s*
+        ([A-Za-z_/ ]+?)
+        \s*\]?\s*\*{1,2}
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def _normalise_flag_message(s: str) -> str:
+    """Lowercase + strip non-alphanumeric for fuzzy comparison."""
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+
+def parse_flag_resolutions(
+    synthesis_content: str,
+    original_flags: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    """Extract per-flag resolutions from a synthesis report and match them
+    back to the original flags emitted by agents.
+
+    Returns a list of dicts, one per original flag, with the resolution
+    text inlined (or empty if no match was found):
+
+        [
+          {
+            "from_agent": "security",
+            "target_key": "performance_engineer",
+            "target_raw": "PERFORMANCE",
+            "message": "AES-CBC sync ...",
+            "resolved": True,
+            "ruling": "Address in Sprint 1 ...",
+            "owner": "Performance Engineer (Path B)",
+          },
+          ...
+        ]
+
+    Pure parser, no API call. Resilient to:
+    - Synthesis omitting the section entirely (returns flags with resolved=False)
+    - Synthesis using a different header level (## vs ### vs ####)
+    - Synthesis abbreviating agent names ("Security" instead of "Security Engineer")
+    - Synthesis dropping the bracket/arrow formatting
+    """
+    # Always start by echoing the original flags with no resolution.
+    enriched: List[Dict[str, str]] = [
+        {
+            **f,
+            "resolved": False,
+            "ruling": "",
+            "owner": "",
+        }
+        for f in (original_flags or [])
+    ]
+
+    if not synthesis_content or not enriched:
+        return enriched
+
+    m = _FLAG_RESOLUTIONS_HEADER.search(synthesis_content)
+    if not m:
+        return enriched  # synthesis didn't write the section — flags stay unresolved
+
+    tail = synthesis_content[m.end():]
+    # Stop at the next H2/H3 to avoid bleeding into adjacent sections.
+    next_header = re.search(r"^#{2,3}\s+\S", tail, re.MULTILINE)
+    section = tail[: next_header.start()] if next_header else tail
+
+    # Split the section into per-resolution blocks. Synthesis usually uses
+    # blockquote `>` syntax; we treat blank lines as separators.
+    blocks = re.split(r"\n\s*\n", section.strip())
+
+    parsed_resolutions: List[Dict[str, str]] = []
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        # Strip leading `>` quoting from each line.
+        block = re.sub(r"^>\s?", "", block, flags=re.MULTILINE)
+
+        header_m = _RESOLUTION_HEADER.search(block)
+        ruling_m = _RESOLUTION_RULING.search(block)
+        owner_m = _RESOLUTION_OWNER.search(block)
+        if not (header_m or ruling_m):
+            continue
+
+        parsed_resolutions.append({
+            "src_text": (header_m.group(1).strip() if header_m else ""),
+            "tgt_text": (header_m.group(2).strip() if header_m else ""),
+            "ruling": (ruling_m.group(1).strip() if ruling_m else block[:240]),
+            "owner": (owner_m.group(1).strip() if owner_m else ""),
+            "raw_block": block[:600],
+        })
+
+    if not parsed_resolutions:
+        return enriched
+
+    # Fuzzy-match each resolution back to an original flag. Strategy:
+    # 1. If src_text/tgt_text both match an original flag's from_agent/target
+    #    (after alias normalisation), claim that flag.
+    # 2. Otherwise, tag the resolution as "unmatched" — still useful, the
+    #    frontend can show it as "additional rulings synthesis added."
+    name_to_key = {}
+    # Build name → key map from PERSONA_CONFIGS plus alias map.
+    for k, cfg in PERSONA_CONFIGS.items():
+        name_to_key[(cfg.get("name") or k).lower()] = k
+        name_to_key[k.lower()] = k
+    for alias, key in _FLAG_TARGET_ALIASES.items():
+        name_to_key[alias.lower()] = key
+
+    def _to_key(text: str) -> str:
+        t = (text or "").lower().strip()
+        if t in name_to_key:
+            return name_to_key[t]
+        # Try partial — e.g. "security engineer" contains "security"
+        for name, key in name_to_key.items():
+            if name and name in t:
+                return key
+        return ""
+
+    used_indexes: set = set()
+    for res in parsed_resolutions:
+        src_key = _to_key(res["src_text"])
+        tgt_key = _to_key(res["tgt_text"])
+        match_idx = -1
+        # Pass 1: exact src+tgt match
+        for i, flag in enumerate(enriched):
+            if i in used_indexes:
+                continue
+            if (src_key and src_key == flag["from_agent"]
+                    and tgt_key and tgt_key == flag.get("target_key")):
+                match_idx = i
+                break
+        # Pass 2: tgt-only match (src might be missing or paraphrased)
+        if match_idx < 0 and tgt_key:
+            for i, flag in enumerate(enriched):
+                if i in used_indexes:
+                    continue
+                if tgt_key == flag.get("target_key"):
+                    match_idx = i
+                    break
+        # Pass 3: fuzzy message match (last resort) — does the ruling text
+        # contain at least 4 words from the original flag message?
+        if match_idx < 0:
+            ruling_words = set(_normalise_flag_message(res["ruling"]).split())
+            best_overlap = 3  # require at least 4 word overlap
+            for i, flag in enumerate(enriched):
+                if i in used_indexes:
+                    continue
+                flag_words = set(_normalise_flag_message(flag["message"]).split())
+                overlap = len(ruling_words & flag_words)
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    match_idx = i
+
+        if match_idx >= 0:
+            used_indexes.add(match_idx)
+            enriched[match_idx]["resolved"] = True
+            enriched[match_idx]["ruling"] = res["ruling"]
+            enriched[match_idx]["owner"] = res["owner"]
+
+    return enriched
+
+
+# ═══════════════════════════════════════════════════════════════
+# Phase 10 — Agent Effectiveness Scoring
+# ═══════════════════════════════════════════════════════════════
+#
+# After synthesis we score how much the verdict actually leaned on each
+# agent. The hypothesis: an agent whose findings dominate Consensus, who
+# raises productive flags, and who appears in Critical Path actions is
+# pulling weight. An agent who is barely cited is either redundant with
+# others, or covered a domain that didn't matter for THIS codebase.
+#
+# Critically, this answers an open question from LEARNINGS.md about
+# Phase 7B (dynamic agent spawning): "We don't know if spawned specialists
+# are pulling weight in synthesis consensus." Effectiveness scoring gives
+# us that signal — and persisted across runs, it tells us whether a custom
+# specialist deserves to keep their seat on the fleet.
+#
+# Scoring is deliberately simple: weighted citation count of agent name
+# in scored sections of the synthesis. No LLM call. Pure regex + section
+# parsing. Score is normalised to 0-100 across the fleet so it's relative
+# (the top agent is always 100).
+
+# Section weights — how much a citation in each section is worth.
+# Higher weight = more strategic significance.
+_EFFECTIVENESS_SECTION_WEIGHTS = {
+    "consensus":             5.0,   # Findings 3+ agents agreed on
+    "contradictions":        3.0,   # Agent was party to a contradiction
+    "flag_resolutions":      4.0,   # Their flag got resolved
+    "critical_path":         3.0,   # Action attributed to them
+    "risks":                 2.0,   # Listed in Top 10 Risks
+    "quick_wins":            2.0,   # Quick win attributed
+    "blind_spots":          -1.0,   # Penalty: synthesis flagged them as having missed something
+    "executive":             4.0,   # Cited in Exec Summary (rare, high signal)
+    "paths":                 1.0,   # Mention in PATH A/B/C sections
+    "general":               1.0,   # Anywhere else in synthesis
+}
+
+# Identify each scored section by its header. Order matters because we
+# scan the synthesis sequentially.
+_SECTION_HEADERS = [
+    ("executive",        re.compile(r"^#{2,4}\s*Executive\s+Summary", re.IGNORECASE | re.MULTILINE)),
+    ("consensus",        re.compile(r"^#{2,4}\s*Consensus\s+Findings", re.IGNORECASE | re.MULTILINE)),
+    ("contradictions",   re.compile(r"^#{2,4}\s*Cross[-\s]Agent\s+Contradictions", re.IGNORECASE | re.MULTILINE)),
+    ("flag_resolutions", re.compile(r"^#{2,4}\s*Cross[-\s]Domain\s+Flag\s+Resolutions?", re.IGNORECASE | re.MULTILINE)),
+    ("blind_spots",      re.compile(r"^#{2,4}\s*Blind\s+Spots", re.IGNORECASE | re.MULTILINE)),
+    ("paths",            re.compile(r"^#{2,4}\s*Three\s+Strategic\s+Paths", re.IGNORECASE | re.MULTILINE)),
+    ("critical_path",    re.compile(r"^#{2,4}\s*(?:The\s+)?Critical\s+Path", re.IGNORECASE | re.MULTILINE)),
+    ("risks",            re.compile(r"^#{2,4}\s*Consolidated\s+Risk\s+Register|Top\s+10\s+Risks", re.IGNORECASE | re.MULTILINE)),
+    ("quick_wins",       re.compile(r"^#{2,4}\s*Quick\s+Wins", re.IGNORECASE | re.MULTILINE)),
+]
+
+
+def _split_synthesis_into_sections(synthesis_content: str) -> Dict[str, str]:
+    """Carve a synthesis report into the named sections we score against.
+
+    Returns dict {section_name: section_text}. Anything outside known
+    sections is collected under "general".
+    """
+    if not synthesis_content:
+        return {"general": ""}
+
+    # Find every section header and its position. Sort by start.
+    matches = []
+    for name, pattern in _SECTION_HEADERS:
+        for m in pattern.finditer(synthesis_content):
+            matches.append((m.start(), name, m.end()))
+    matches.sort()
+
+    sections: Dict[str, str] = {}
+    if not matches:
+        sections["general"] = synthesis_content
+        return sections
+
+    # Everything before the first matched header counts as general
+    if matches[0][0] > 0:
+        sections["general"] = sections.get("general", "") + synthesis_content[: matches[0][0]]
+
+    for i, (start, name, body_start) in enumerate(matches):
+        end = matches[i + 1][0] if i + 1 < len(matches) else len(synthesis_content)
+        body = synthesis_content[body_start:end]
+        # Multiple matches with the same name (rare) — concat
+        sections[name] = sections.get(name, "") + body
+
+    return sections
+
+
+def _build_agent_lookup(persona_configs: Dict[str, Dict]) -> Dict[str, List[re.Pattern]]:
+    """For each agent key, build a list of regex patterns matching its name
+    in synthesis text. We match the full canonical name AND a couple of
+    common short forms (first word of the name, plus the persona key).
+
+    Patterns use word boundaries to avoid matching substrings.
+    """
+    lookup: Dict[str, List[re.Pattern]] = {}
+    for key, cfg in (persona_configs or {}).items():
+        name = (cfg.get("name") or "").strip()
+        patterns: List[re.Pattern] = []
+        if name:
+            # Full name (case-insensitive)
+            esc = re.escape(name)
+            patterns.append(re.compile(rf"\b{esc}\b", re.IGNORECASE))
+            # Some agents are commonly referenced by the first word ("Architect",
+            # "Security", "QA"). Only register first-word patterns longer than 2
+            # chars to avoid noise.
+            first = name.split()[0] if name else ""
+            if first and len(first) > 2 and first.lower() != name.lower():
+                # First word is more ambiguous — require capitalisation in
+                # synthesis context (synthesis mostly uses capitalised role names).
+                patterns.append(re.compile(rf"\b{re.escape(first)}\b"))
+        # Persona key as fallback (e.g. "tech_lead" rare in synthesis but possible)
+        patterns.append(re.compile(rf"\b{re.escape(key)}\b", re.IGNORECASE))
+        lookup[key] = patterns
+    return lookup
+
+
+def compute_agent_effectiveness(
+    synthesis_content: str,
+    collected_results: Dict[str, str],
+    persona_configs: Dict[str, Dict],
+    custom_agent_keys: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Score how much synthesis leaned on each agent.
+
+    Returns a list sorted by raw_score descending. Each entry:
+        {
+          "persona": "security",
+          "name": "Security Engineer",
+          "emoji": "🔒",
+          "is_custom": False,
+          "raw_score": 27.0,           # weighted citation total
+          "normalised": 87,            # 0-100 relative to top agent
+          "section_breakdown": {
+              "consensus": 4,          # citation count (not weighted)
+              "contradictions": 1,
+              "flag_resolutions": 2,
+              ...
+          },
+          "report_chars": 18432,       # length of agent's own report
+          "verdict": "high|medium|low|absent"
+        }
+
+    `verdict` is a coarse label: high (normalised >=70), medium (40-69),
+    low (10-39), absent (<10). Used for UI badging.
+
+    No API call. Pure regex + section scan. Runs in <50ms even for big
+    synthesis reports.
+    """
+    if not synthesis_content or not persona_configs:
+        return []
+
+    sections = _split_synthesis_into_sections(synthesis_content)
+    lookup = _build_agent_lookup(persona_configs)
+    custom_keys = set(custom_agent_keys or [])
+
+    scored: List[Dict[str, Any]] = []
+    for key, cfg in persona_configs.items():
+        # Don't score the synthesis agent against its own output.
+        if key == "synthesis":
+            continue
+
+        section_counts: Dict[str, int] = {}
+        raw_score = 0.0
+        for section_name, section_text in sections.items():
+            if not section_text:
+                continue
+            count = 0
+            for pattern in lookup.get(key, []):
+                count += len(pattern.findall(section_text))
+            if count == 0:
+                continue
+            section_counts[section_name] = count
+            weight = _EFFECTIVENESS_SECTION_WEIGHTS.get(section_name, 1.0)
+            raw_score += weight * count
+
+        scored.append({
+            "persona": key,
+            "name": cfg.get("name", key),
+            "emoji": cfg.get("emoji", "🤖"),
+            "is_custom": key in custom_keys,
+            "raw_score": round(raw_score, 2),
+            "section_breakdown": section_counts,
+            "report_chars": len((collected_results or {}).get(key, "") or ""),
+        })
+
+    if not scored:
+        return scored
+
+    # Normalise to 0-100 against the top agent so the user gets a relative scale.
+    max_score = max(s["raw_score"] for s in scored) or 1.0
+    for s in scored:
+        s["normalised"] = int(round(100 * s["raw_score"] / max_score))
+        n = s["normalised"]
+        if n >= 70:
+            s["verdict"] = "high"
+        elif n >= 40:
+            s["verdict"] = "medium"
+        elif n >= 10:
+            s["verdict"] = "low"
+        else:
+            s["verdict"] = "absent"
+
+    # Sort by raw_score descending for display.
+    scored.sort(key=lambda s: s["raw_score"], reverse=True)
+    return scored
+
+
+# ═══════════════════════════════════════════════════════════════
+# Phase 7 — Episodic Memory & Post-Run Documentation
+# ═══════════════════════════════════════════════════════════════
+
+def format_episodic_memory(memory: Dict[str, Any]) -> str:
+    """
+    Format episodic memory into a prompt block that gets injected into every
+    agent's system prompt. Agents receive previous findings, living documents,
+    and run history as context — they are *briefed*, not starting from zero.
+    """
+    if not memory or memory.get("run_count", 0) == 0:
+        return ""
+
+    lines = [
+        "\n## 📋 PROJECT HISTORY (Episodic Memory)",
+        f"This project has been analysed **{memory['run_count']}** time(s) previously.\n",
+    ]
+
+    # Previous run metadata
+    if memory.get("previous_runs"):
+        lines.append("### Previous Runs")
+        for run in memory["previous_runs"][:3]:
+            inp = run.get("input_payload", {})
+            url = inp.get("github_url") or inp.get("topic", "")
+            lines.append(f"- **Run {run['run_id']}** ({run.get('started_at', 'unknown date')}) — {run.get('kind', '')} — {url[:80]}")
+        lines.append("")
+
+    # Previous findings (latest run, per agent, truncated)
+    if memory.get("previous_findings"):
+        lines.append("### Key Findings from Last Run")
+        lines.append("Review these and confirm whether each item is still relevant, resolved, or escalating:\n")
+        for persona, content in memory["previous_findings"].items():
+            # Take first 800 chars per agent — enough for key points
+            snippet = content[:800]
+            if len(content) > 800:
+                snippet += "..."
+            lines.append(f"**{persona.replace('_', ' ').title()}:**")
+            lines.append(snippet)
+            lines.append("")
+
+    # Latest synthesis (executive summary only — not full verdict)
+    if memory.get("synthesis_history"):
+        latest = memory["synthesis_history"][0]
+        lines.append("### Previous Verdict Summary")
+        lines.append(f"_(Run {latest['run_id']}, {latest.get('date', '')})_\n")
+        # Extract just the executive summary section if possible
+        syn = latest.get("summary", "")
+        exec_match = re.search(
+            r'(?:Executive Summary|## Executive|## 1\.)(.*?)(?=\n## |\n# |\Z)',
+            syn, re.DOTALL | re.IGNORECASE
+        )
+        if exec_match:
+            lines.append(exec_match.group(1).strip()[:1500])
+        else:
+            lines.append(syn[:1500])
+        lines.append("")
+
+    # Living documents — inject current state
+    living_docs = memory.get("living_docs", {})
+    if living_docs:
+        lines.append("### Accumulated Project Knowledge")
+        doc_labels = {
+            "doc_lessons_learned": "Lessons Learned",
+            "doc_risk_register": "Risk Register",
+            "doc_tech_debt": "Technical Debt Inventory",
+            "doc_decision_log": "Decision Log",
+            "doc_agent_notes": "Agent Knowledge Notes",
+        }
+        for kind, label in doc_labels.items():
+            doc = living_docs.get(kind)
+            if doc and doc.get("content"):
+                content = doc["content"][:1200]
+                if len(doc["content"]) > 1200:
+                    content += "\n..."
+                lines.append(f"\n**{label}:**")
+                lines.append(content)
+
+    lines.append("\n---\n")
+    lines.append("**IMPORTANT:** Reference previous findings where relevant. Note if issues have been resolved, persist, or are new. Update your assessment based on what has changed.\n")
+
+    return "\n".join(lines)
+
+
+# ── Post-Run Documentation Generation ─────────────────────────
+
+_DOC_GEN_PROMPT = """You are a documentation engine. You have just completed an analysis run.
+Below are all agent reports and the synthesis verdict from this run.
+
+Your job is to produce/update SIX project documents. For each document, output
+a JSON object. Return ONLY a JSON array of 6 objects (no markdown fences, no prose).
+
+Each object:
+{{
+  "doc_kind": "doc_run_summary|doc_lessons_learned|doc_decision_log|doc_risk_register|doc_tech_debt|doc_agent_notes",
+  "content": "Full markdown content for this document",
+  "structured_data": {{...optional structured fields...}}
+}}
+
+=== DOCUMENT SPECIFICATIONS ===
+
+1. **doc_run_summary** — A concise snapshot of THIS run:
+   - What was analysed (repo/topic, key stats)
+   - Top 5 findings across all agents
+   - Confidence levels summary
+   - Cost of this run (if available)
+   - Any new risks or resolved items vs previous runs
+
+2. **doc_lessons_learned** — Cumulative lessons:
+   {existing_lessons}
+   ADD new lessons from this run. Preserve existing lessons. Format:
+   - Date, source agent, lesson, context, recommended action
+   - Group by theme (Architecture, Security, Process, Performance, etc.)
+
+3. **doc_decision_log** — Architectural/technical decisions identified:
+   {existing_decisions}
+   ADD new decisions found in this analysis. Preserve existing. Format:
+   - Decision, rationale, trade-offs, alternatives considered, status (proposed/accepted/superseded)
+
+4. **doc_risk_register** — Accumulated risk tracking:
+   {existing_risks}
+   UPDATE existing risks (change status if resolved/escalated). ADD new risks. Format:
+   - ID, risk description, severity (critical/high/medium/low), likelihood, impact, status (new/acknowledged/mitigating/mitigated/closed), mitigation, source agent, first identified date
+
+5. **doc_tech_debt** — Itemised technical debt:
+   {existing_debt}
+   UPDATE existing items. ADD new items found. Format:
+   - ID, description, category (code/architecture/infrastructure/testing/documentation), severity, estimated effort, status (identified/acknowledged/planned/in_progress/resolved), source agent
+
+6. **doc_agent_notes** — What each agent learned about this specific codebase/project:
+   {existing_notes}
+   UPDATE with new per-agent learnings. Preserve existing. Format per agent:
+   - Agent name, key observations, domain-specific findings, what they would look for next time, recommendations for future runs
+
+=== AGENT REPORTS ===
+{agent_reports}
+
+=== SYNTHESIS VERDICT ===
+{synthesis}
+
+=== PREVIOUS RUN CONTEXT ===
+Runs completed before this one: {run_count}
+{episodic_context}
+
+Return ONLY the JSON array. No commentary."""
+
+
+async def generate_post_run_documents(
+    gemini_api_key: str,
+    agent_results: Dict[str, str],
+    synthesis_content: str,
+    episodic_memory: Dict[str, Any],
+    run_metadata: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Generate/update all 6 project documents after a run completes.
+    Uses Gemini Flash (free tier where possible) for cost efficiency.
+    Returns a list of {doc_kind, content, structured_data} dicts.
+    """
+    # Format existing documents for the prompt
+    living_docs = episodic_memory.get("living_docs", {})
+
+    def _existing(kind: str) -> str:
+        doc = living_docs.get(kind)
+        if doc and doc.get("content"):
+            return f"EXISTING CONTENT (preserve and update):\n{doc['content'][:4000]}"
+        return "No existing content — create from scratch."
+
+    # Format agent reports (truncated for doc gen)
+    reports_text = ""
+    for key, content in agent_results.items():
+        reports_text += f"\n### {key.replace('_', ' ').title()}\n{content[:3000]}\n"
+
+    # Episodic context
+    episodic_text = ""
+    if episodic_memory.get("previous_findings"):
+        episodic_text = "Previous findings were available to agents during this run."
+
+    prompt = _DOC_GEN_PROMPT.format(
+        existing_lessons=_existing("doc_lessons_learned"),
+        existing_decisions=_existing("doc_decision_log"),
+        existing_risks=_existing("doc_risk_register"),
+        existing_debt=_existing("doc_tech_debt"),
+        existing_notes=_existing("doc_agent_notes"),
+        agent_reports=reports_text[:40000],
+        synthesis=synthesis_content[:5000],
+        run_count=episodic_memory.get("run_count", 0),
+        episodic_context=episodic_text,
+    )
+
+    try:
+        client = genai.Client(api_key=gemini_api_key)
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.3,
+                max_output_tokens=12000,
+            ),
+        )
+        text = response.text.strip()
+
+        # Strip markdown fences if present
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\n?", "", text)
+            text = re.sub(r"\n?```$", "", text)
+
+        docs = json.loads(text)
+        if isinstance(docs, list):
+            return docs
+        return []
+    except Exception as e:
+        logger.error(f"Post-run doc generation failed: {e}")
+        # Return empty — docs are non-critical, don't fail the run
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════
+# Phase 7B — Dynamic Agent Spawning
+# ═══════════════════════════════════════════════════════════════
+
+_SPECIALIST_ANALYSIS_PROMPT = """You are the fleet coordinator for an 18-agent AI analysis team.
+A run has just completed. Analyse the confidence probes and agent reports below to determine
+if any SPECIALIST agents should be spawned for a re-run.
+
+A specialist is needed when:
+1. Multiple agents flagged the same knowledge gap (e.g. "none of us know Kubernetes Helm charts")
+2. A critical domain appeared in the codebase/topic that no existing agent covers
+3. Confidence was LOW for a domain-critical agent and their output was noticeably generic
+4. An agent explicitly requested consulting another specialist that doesn't exist
+
+DO NOT propose specialists for things the existing fleet already covers well.
+DO NOT propose more than 3 specialists per run.
+
+=== CONFIDENCE PROBES ===
+{probes}
+
+=== AGENT REPORTS (key excerpts) ===
+{reports}
+
+=== EXISTING FLEET ===
+{fleet_keys}
+
+=== CUSTOM AGENTS ALREADY ON THIS PROJECT ===
+{existing_custom}
+
+Return ONLY a JSON array (no markdown, no prose). Each element:
+{{
+  "persona_key": "specialist_<domain>_<focus>",
+  "name": "Human-readable Specialist Name",
+  "emoji": "single emoji",
+  "model": "gemini",
+  "reason": "1-2 sentence explanation of WHY this specialist is needed — what gap it fills",
+  "domain_focus": "The specific technical/business domain",
+  "context_limit": 70000,
+  "investigation_areas": ["3-5 specific things this specialist should investigate"]
+}}
+
+If NO specialists are needed, return an empty array: []
+"""
+
+_PERSONA_DRAFT_PROMPT = """Create a detailed system prompt for a specialist AI agent.
+
+Agent name: {name}
+Domain focus: {domain_focus}
+Reason for creation: {reason}
+Investigation areas: {investigation_areas}
+
+The system prompt should follow this structure (use markdown formatting):
+1. Open with "You are a [title] with [expertise description]"
+2. **Your Mission** — what specifically this agent must do
+3. **Your Deep Investigation Checklist** — 8-12 specific items to examine
+4. **Your Deliverables** — exact output sections with formatting requirements
+5. **Your Homework** — what research and cross-referencing to do
+
+Make the prompt HIGHLY SPECIFIC to the domain. Reference named tools, frameworks,
+standards, and patterns relevant to this domain. The agent should sound like a genuine
+specialist, not a generalist wearing a hat.
+
+Return ONLY the system prompt text. No JSON wrapping, no commentary."""
+
+_PERSONA_REVIEW_PROMPT = """You are a senior prompt engineer reviewing a system prompt for a specialist AI agent.
+
+Agent name: {name}
+Domain: {domain_focus}
+Reason: {reason}
+
+=== DRAFT PROMPT ===
+{draft}
+=== END DRAFT ===
+
+Review and improve this prompt. Ensure:
+1. It is specific and actionable, not generic
+2. Investigation checklist items reference named tools/standards/patterns
+3. Deliverables have clear formatting requirements
+4. The agent sounds like a genuine domain expert
+5. It includes cross-referencing with other agents' findings where relevant
+
+Return ONLY the improved system prompt. No commentary, no JSON wrapping."""
+
+
+async def analyse_for_specialists(
+    probe_results: Dict[str, Dict],
+    agent_results: Dict[str, str],
+    gemini_api_key: str,
+    existing_custom_keys: List[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    After a run completes, analyse confidence probes + reports to propose
+    specialist agents that would fill knowledge gaps on a re-run.
+    Uses Gemini Flash (free tier).
+    """
+    # Format probes summary
+    probes_text = ""
+    for key, probe in probe_results.items():
+        conf = probe.get("confidence", "medium")
+        gaps = probe.get("gaps", [])
+        consult = probe.get("consult_agents", [])
+        probes_text += f"- **{key}** [{conf}]: gaps={gaps[:3]}, wants_consult={consult}\n"
+
+    # Format report excerpts (first 500 chars each)
+    reports_text = ""
+    for key, content in agent_results.items():
+        reports_text += f"### {key}\n{content[:500]}\n\n"
+
+    fleet_keys = ", ".join(PERSONA_CONFIGS.keys())
+    existing_text = ", ".join(existing_custom_keys or []) or "(none)"
+
+    prompt = _SPECIALIST_ANALYSIS_PROMPT.format(
+        probes=probes_text[:8000],
+        reports=reports_text[:20000],
+        fleet_keys=fleet_keys,
+        existing_custom=existing_text,
+    )
+
+    try:
+        client = genai.Client(api_key=gemini_api_key)
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.3,
+                max_output_tokens=4000,
+            ),
+        )
+        text = response.text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\n?", "", text)
+            text = re.sub(r"\n?```$", "", text)
+        proposals = json.loads(text)
+        if isinstance(proposals, list):
+            return proposals[:3]  # Cap at 3
+        return []
+    except Exception as e:
+        logger.error(f"Specialist analysis failed: {e}")
+        return []
+
+
+async def create_specialist_persona(
+    proposal: Dict[str, Any],
+    gemini_api_key: str,
+    anthropic_api_key: str,
+) -> Dict[str, Any]:
+    """
+    Two-pass persona creation:
+    1. Gemini Flash drafts the persona (free tier)
+    2. Sonnet reviews and refines (paid, but small)
+    Returns the proposal dict enriched with 'system_prompt'.
+    """
+    name = proposal.get("name", "Specialist")
+    domain = proposal.get("domain_focus", "")
+    reason = proposal.get("reason", "")
+    investigation = proposal.get("investigation_areas", [])
+
+    # Pass 1: Flash drafts
+    draft_prompt = _PERSONA_DRAFT_PROMPT.format(
+        name=name,
+        domain_focus=domain,
+        reason=reason,
+        investigation_areas="\n".join(f"- {a}" for a in investigation),
+    )
+    try:
+        client = genai.Client(api_key=gemini_api_key)
+        draft_resp = await asyncio.to_thread(
+            client.models.generate_content,
+            model="gemini-2.0-flash",
+            contents=draft_prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.5,
+                max_output_tokens=4000,
+            ),
+        )
+        draft = draft_resp.text.strip()
+    except Exception as e:
+        logger.error(f"Specialist persona draft failed: {e}")
+        draft = f"You are a {name} specialist. Analyse the codebase for {domain} concerns."
+
+    # Pass 2: Sonnet reviews
+    review_prompt = _PERSONA_REVIEW_PROMPT.format(
+        name=name,
+        domain_focus=domain,
+        reason=reason,
+        draft=draft,
+    )
+    try:
+        anth_client = anthropic.Anthropic(api_key=anthropic_api_key)
+        review_resp = await asyncio.to_thread(
+            anth_client.messages.create,
+            model="claude-sonnet-4-20250514",
+            max_tokens=4000,
+            messages=[{"role": "user", "content": review_prompt}],
+        )
+        refined = review_resp.content[0].text.strip()
+    except Exception as e:
+        logger.warning(f"Specialist persona review failed (using draft): {e}")
+        refined = draft
+
+    proposal["system_prompt"] = refined
+    return proposal
 
 
 async def run_recon_agent(
     gemini_api_key: str,
     code_context: str,
+    anthropic_api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Reconnaissance pre-pass: a fast, lightweight Gemini call that reads the
@@ -1715,22 +3597,52 @@ Read the codebase below and return ONLY a JSON object (no markdown, no explanati
 
 Return ONLY the JSON object. No markdown fences, no explanation."""
 
-    try:
+    async def _try_gemini() -> str:
         gemini_client = genai.Client(api_key=gemini_api_key)
         response = await gemini_client.aio.models.generate_content(
             model='gemini-2.0-flash',
             contents=prompt,
             config=types.GenerateContentConfig(temperature=0.1),  # Low temp for factual JSON
         )
-        raw = response.text.strip()
-        # Strip markdown fences if the model added them anyway
+        return response.text
+
+    def _parse(raw: str) -> Dict[str, Any]:
+        raw = raw.strip()
         raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw, flags=re.MULTILINE).strip()
-        recon_data = json.loads(raw)
-        recon_data["_recon_success"] = True
-        return recon_data
-    except Exception as e:
-        logger.warning(f"Recon agent failed ({e}), proceeding without recon context.")
-        return {"_recon_success": False, "raw_summary": "Reconnaissance unavailable."}
+        data = json.loads(raw)
+        data["_recon_success"] = True
+        return data
+
+    # 1) Try Gemini
+    try:
+        return _parse(await _try_gemini())
+    except Exception as gemini_err:
+        err_kind = _classify_gemini_error(gemini_err)
+        logger.warning(
+            f"Recon agent Gemini {err_kind} failure: {gemini_err!r}. "
+            f"{'Trying Anthropic fallback.' if anthropic_api_key else 'No fallback key — skipping recon.'}"
+        )
+
+    # 2) Fall back to Anthropic if available
+    if anthropic_api_key:
+        try:
+            raw, _usage = await _run_prompt_on_anthropic(
+                prompt,
+                anthropic_api_key,
+                max_tokens=2048,
+                temperature=0.1,
+                system=(
+                    "You are a fast codebase reconnaissance agent. Return valid JSON only — "
+                    "no prose, no markdown fences."
+                ),
+            )
+            recon = _parse(raw)
+            recon["_recon_via"] = "anthropic_fallback"
+            return recon
+        except Exception as anthropic_err:
+            logger.warning(f"Recon Anthropic fallback also failed: {anthropic_err!r}.")
+
+    return {"_recon_success": False, "raw_summary": "Reconnaissance unavailable."}
 
 
 def format_recon_for_prompt(recon: Dict[str, Any]) -> str:
@@ -1762,19 +3674,199 @@ def format_recon_for_prompt(recon: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+async def run_topic_recon_agent(
+    gemini_api_key: str,
+    topic: str,
+    context: str,
+    anthropic_api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Topic-mode equivalent of run_recon_agent. Instead of identifying a tech stack,
+    this pre-pass reads the topic brief + scraped research material and produces
+    a structured JSON summary of the problem space: domain, current platform,
+    target platform, key concepts, existing solutions, and known constraints.
+
+    The output is injected into every persona's prompt as verified baseline
+    context so agents skip 'what is this topic even about' and jump to their
+    domain-specific plan.
+    """
+    RECON_SAMPLE_CHARS = 80_000
+    sample = context[:RECON_SAMPLE_CHARS]
+    if len(context) > RECON_SAMPLE_CHARS:
+        sample += f"\n\n[Showing first {RECON_SAMPLE_CHARS:,} of {len(context):,} chars for reconnaissance]"
+
+    prompt = f"""You are a rapid topic reconnaissance agent. Your job is NOT deep analysis — it is fast, accurate mapping of the problem space so that a team of specialist agents can immediately start producing their plans without wasting time on discovery.
+
+Read the topic brief and research material below, then return ONLY a JSON object (no markdown, no explanation, just valid JSON) with exactly these fields:
+
+{{
+  "problem_domain": "Short label for the business/technical domain — e.g. 'Case Management', 'Claims Processing'",
+  "current_platform": "The platform/system being moved away from, or 'Greenfield' if none — e.g. 'OutSystems 11'",
+  "target_platform": "The platform/system being built on — e.g. 'OutSystems Developer Cloud (ODC)'",
+  "key_concepts": ["Named concepts / entities / workflows that appear in the research material — e.g. 'Case', 'Workflow', 'SLA Timer'"],
+  "existing_solutions_cited": ["Specific products, frameworks, Forge components, or reference implementations mentioned in the sources"],
+  "platform_differences": ["Concrete differences between current_platform and target_platform that will materially affect the plan"],
+  "primary_stakeholders": ["Who cares about this initiative — e.g. 'Ops teams', 'Compliance', 'End customers'"],
+  "documented_constraints": ["Hard limits / requirements surfaced in the research material — compliance, SLAs, data residency"],
+  "open_questions": ["Questions the research material did NOT answer but which will materially change the plan"],
+  "estimated_complexity": "Low / Medium / High / Very High",
+  "red_flags": ["Warning signs surfaced in the sources or implied by missing information"],
+  "raw_summary": "2-3 sentence human-readable overview of what this topic is about, what is being proposed, and what the main risk axis is"
+}}
+
+--- TOPIC BRIEF ---
+{topic}
+--- END TOPIC BRIEF ---
+
+--- RESEARCH MATERIAL SAMPLE ---
+{sample}
+--- END SAMPLE ---
+
+Return ONLY the JSON object. No markdown fences, no explanation."""
+
+    async def _try_gemini() -> str:
+        gemini_client = genai.Client(api_key=gemini_api_key)
+        response = await gemini_client.aio.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.1),
+        )
+        return response.text
+
+    def _parse(raw: str) -> Dict[str, Any]:
+        raw = raw.strip()
+        raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw, flags=re.MULTILINE).strip()
+        data = json.loads(raw)
+        data["_recon_success"] = True
+        data["_mode"] = "topic"
+        return data
+
+    # 1) Try Gemini
+    try:
+        return _parse(await _try_gemini())
+    except Exception as gemini_err:
+        err_kind = _classify_gemini_error(gemini_err)
+        logger.warning(
+            f"Topic recon Gemini {err_kind} failure: {gemini_err!r}. "
+            f"{'Trying Anthropic fallback.' if anthropic_api_key else 'No fallback key — skipping recon.'}"
+        )
+
+    # 2) Fall back to Anthropic if available
+    if anthropic_api_key:
+        try:
+            raw, _usage = await _run_prompt_on_anthropic(
+                prompt,
+                anthropic_api_key,
+                max_tokens=2048,
+                temperature=0.1,
+                system=(
+                    "You are a fast topic reconnaissance agent. Return valid JSON only — "
+                    "no prose, no markdown fences."
+                ),
+            )
+            recon = _parse(raw)
+            recon["_recon_via"] = "anthropic_fallback"
+            return recon
+        except Exception as anthropic_err:
+            logger.warning(f"Topic recon Anthropic fallback also failed: {anthropic_err!r}.")
+
+    return {"_recon_success": False, "_mode": "topic", "raw_summary": "Topic reconnaissance unavailable."}
+
+
+def format_topic_recon_for_prompt(recon: Dict[str, Any]) -> str:
+    """Render the topic recon JSON as a concise structured block for agent prompts."""
+    if not recon.get("_recon_success"):
+        return ""
+    lines = [
+        "## Topic Reconnaissance Summary (pre-computed — verified before your analysis begins)",
+        f"- **Problem domain**: {recon.get('problem_domain', 'Unknown')}",
+        f"- **Current platform**: {recon.get('current_platform', 'Unknown')}",
+        f"- **Target platform**: {recon.get('target_platform', 'Unknown')}",
+        f"- **Estimated complexity**: {recon.get('estimated_complexity', 'Unknown')}",
+    ]
+    if recon.get("key_concepts"):
+        lines.append(f"- **Key concepts**: {', '.join(recon['key_concepts'])}")
+    if recon.get("existing_solutions_cited"):
+        lines.append(f"- **Cited solutions / components**: {', '.join(recon['existing_solutions_cited'])}")
+    if recon.get("platform_differences"):
+        lines.append(f"- **Platform deltas to plan for**: {'; '.join(recon['platform_differences'])}")
+    if recon.get("primary_stakeholders"):
+        lines.append(f"- **Primary stakeholders**: {', '.join(recon['primary_stakeholders'])}")
+    if recon.get("documented_constraints"):
+        lines.append(f"- **Documented constraints**: {'; '.join(recon['documented_constraints'])}")
+    if recon.get("open_questions"):
+        lines.append(f"- **Open questions (unanswered by the material)**: {'; '.join(recon['open_questions'])}")
+    if recon.get("red_flags"):
+        lines.append(f"- **⚠️ Red flags**: {'; '.join(recon['red_flags'])}")
+    lines.append(f"\n**Topic overview**: {recon.get('raw_summary', '')}")
+    lines.append(
+        "\nUse the above as verified baseline context. Do not re-derive the problem domain — "
+        "go straight to producing your role's plan for delivering the topic on the target platform."
+    )
+    return "\n".join(lines)
+
+
 async def run_agent_fleet(
     gemini_api_key: str,
     anthropic_api_key: str,
     code_context: str,
     client_context: str = "",
-    db_persona_prompts: str = ""
+    db_persona_prompts: str = "",
+    topic: str = "",
+    project_materials: Optional[List[Dict[str, Any]]] = None,
+    skip_personas: Optional[List[str]] = None,
+    confidence_gate: bool = True,
+    answer_provider: Optional[Any] = None,
+    episodic_memory: Optional[Dict[str, Any]] = None,
+    custom_agents: Optional[List[Dict[str, Any]]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
-    Run all 15 persona agents in parallel, yield results as they arrive,
+    Run all persona agents in parallel, yield results as they arrive,
     then run the synthesis agent sequentially and yield its result.
+
+    When `topic` is non-empty, the fleet runs in "topic mode": the reconnaissance
+    pass is reframed as a domain/platform recon of the research material, and
+    every persona receives the topic as a PRIMARY DIRECTIVE.
+
+    `skip_personas` — optional list of persona keys to exclude (frugal mode).
+
+    `custom_agents` — list of project-level custom agent dicts (from DB).
+    Each has persona_key, title, content (system_prompt), structured_data.
+
+    Phase 6 — Confidence gate:
+    When `confidence_gate` is True (default), the fleet runs a fast confidence
+    probe on all agents before the main analysis. If any agent has questions,
+    the fleet yields them and waits for the user to answer via `answer_provider`
+    (an asyncio.Event + dict pair set by the session mechanism in main.py).
     """
     queue = asyncio.Queue()
     collected_results: Dict[str, str] = {}
+
+    # Phase 7B — merge custom project agents into the fleet
+    merged_configs = dict(PERSONA_CONFIGS)
+    for ca in (custom_agents or []):
+        key = ca.get("persona_key")
+        sd = ca.get("structured_data") or {}
+        if key and key not in merged_configs:
+            merged_configs[key] = {
+                "name": ca.get("title") or sd.get("name", key),
+                "emoji": sd.get("emoji", "🔬"),
+                "model": sd.get("model", "gemini"),
+                "system_prompt": ca.get("content") or "",
+            }
+            # Register context limit
+            ctx_limit = sd.get("context_limit", 70000)
+            PERSONA_CONTEXT_LIMITS[key] = ctx_limit
+            logger.info(f"Custom agent merged into fleet: {key} ({sd.get('name', key)})")
+
+    # Phase 5 — frugal mode: exclude specified personas.
+    active_personas = {
+        k: v for k, v in merged_configs.items()
+        if not skip_personas or k not in skip_personas
+    }
+    skipped_count = len(merged_configs) - len(active_personas)
+    if skipped_count:
+        logger.info(f"Frugal mode: skipping {skipped_count} persona(s): {skip_personas}")
 
     async def status_callback(persona_key: str, status: str, sub_status: str):
         await queue.put({
@@ -1787,14 +3879,25 @@ async def run_agent_fleet(
         })
 
     # ── Phase 0: Reconnaissance pre-pass ────────────────────────────────────
-    # A fast Gemini call produces a structured repo summary. This is injected
-    # into every agent's prompt so they skip the 'identify the stack' phase.
+    # A fast Gemini call produces a structured summary. In code mode this is a
+    # tech-stack recon of the repo. In topic mode it is a domain/platform recon
+    # of the research material. Either way the output is injected into every
+    # agent's prompt so they skip the 'identify the context' phase.
+    recon_label = "topic reconnaissance" if topic else "codebase reconnaissance"
     yield {
         "event": "agent_update",
-        "data": {"key": "recon", "status": "thinking", "sub_status": "Running codebase reconnaissance..."}
+        "data": {"key": "recon", "status": "thinking", "sub_status": f"Running {recon_label}..."}
     }
-    recon_data = await run_recon_agent(gemini_api_key, code_context)
-    recon_context = format_recon_for_prompt(recon_data)
+    if topic:
+        recon_data = await run_topic_recon_agent(
+            gemini_api_key, topic, code_context, anthropic_api_key=anthropic_api_key
+        )
+        recon_context = format_topic_recon_for_prompt(recon_data)
+    else:
+        recon_data = await run_recon_agent(
+            gemini_api_key, code_context, anthropic_api_key=anthropic_api_key
+        )
+        recon_context = format_recon_for_prompt(recon_data)
     yield {
         "event": "agent_update",
         "data": {
@@ -1805,11 +3908,120 @@ async def run_agent_fleet(
         }
     }
 
+    # ── Project materials block (Phase 2) ──────────────────────────────────
+    # Render the user-supplied materials (PDFs, OAP packages, pasted text, URLs)
+    # as a verbatim block injected alongside the recon summary into every agent
+    # prompt. Soft-imported so agent_engine still works without the new module.
+    materials_context = ""
+    if project_materials:
+        try:
+            import materials_extractor as _mx  # local import keeps agent_engine standalone
+            materials_context = _mx.materials_to_prompt_block(project_materials)
+        except Exception as e:
+            logger.warning(f"Could not render project materials block: {e}")
+
+    # ── Phase 6: Confidence probe + user Q&A + cross-agent briefing ─────────
+    cross_agent_briefing = ""
+    user_answers_block = ""
+    probe_results = {}
+
+    if confidence_gate:
+        yield {
+            "event": "status",
+            "data": {
+                "phase": "confidence_check",
+                "message": f"Running confidence probe on {len(active_personas)} agents..."
+            }
+        }
+        probe_results = await run_all_confidence_probes(
+            active_personas, gemini_api_key, anthropic_api_key,
+            code_context, recon_data=recon_data, topic=topic,
+        )
+
+        # Build cross-agent briefing from high-confidence agents.
+        cross_agent_briefing = build_cross_agent_briefing(probe_results)
+
+        # Aggregate questions for the user.
+        all_questions: Dict[str, List[str]] = {}
+        confidence_summary: Dict[str, Any] = {}
+        for key, probe in probe_results.items():
+            qs = probe.get("questions_for_user", [])
+            if qs:
+                all_questions[key] = qs
+            confidence_summary[key] = {
+                "name": probe.get("name", key),
+                "emoji": active_personas.get(key, {}).get("emoji", ""),
+                "confidence": probe.get("confidence", "medium"),
+                "gaps": probe.get("gaps", []),
+                "confident_about": probe.get("confident_about", []),
+            }
+
+        yield {
+            "event": "confidence_report",
+            "data": {
+                "probes": confidence_summary,
+                "has_questions": bool(all_questions),
+                "questions": all_questions,
+                "cross_agent_briefing_available": bool(cross_agent_briefing),
+            }
+        }
+
+        # If agents have questions AND we have an answer_provider, wait for user.
+        if all_questions and answer_provider:
+            event_obj = answer_provider.get("event")
+            yield {
+                "event": "awaiting_answers",
+                "data": {
+                    "session_id": answer_provider.get("session_id", ""),
+                    "questions": all_questions,
+                    "message": (
+                        f"{len(all_questions)} agent(s) have questions that would improve their analysis. "
+                        "Answer below, provide URLs, or skip to proceed."
+                    ),
+                }
+            }
+            if event_obj:
+                try:
+                    await asyncio.wait_for(event_obj.wait(), timeout=300)  # 5 min max
+                except asyncio.TimeoutError:
+                    logger.info("Confidence Q&A timed out after 5 minutes — proceeding.")
+            user_answers = answer_provider.get("answers", {})
+            user_answers_block = build_user_answers_block(user_answers)
+
+        yield {
+            "event": "status",
+            "data": {
+                "phase": "agents_launching",
+                "message": f"Confidence check complete — launching {len(active_personas)} agents..."
+            }
+        }
+
     # ── Staggered launch — Gemini agents fire immediately (no shared rate limit).
     # Anthropic agents use wrapper coroutines with built-in stagger delays so ALL
     # tasks are created upfront (needed for as_completed to track them all).
-    anthropic_personas = [k for k, v in PERSONA_CONFIGS.items() if v.get("model") == "anthropic"]
-    gemini_personas = [k for k in PERSONA_CONFIGS if k not in anthropic_personas]
+    anthropic_personas = [k for k, v in active_personas.items() if v.get("model") == "anthropic"]
+    gemini_personas = [k for k in active_personas if k not in anthropic_personas]
+
+    # Pre-assemble the augmented prompt fragment once so every agent sees
+    # the same recon + materials + cross-agent briefing + user answers context.
+    augmented_persona_prompts = db_persona_prompts
+    if recon_context:
+        augmented_persona_prompts = augmented_persona_prompts + "\n\n" + recon_context
+    if materials_context:
+        augmented_persona_prompts = augmented_persona_prompts + "\n\n" + materials_context
+    # Phase 7 — inject episodic memory (previous findings, living docs)
+    episodic_block = format_episodic_memory(episodic_memory or {})
+    if episodic_block:
+        augmented_persona_prompts = augmented_persona_prompts + "\n\n" + episodic_block
+    if cross_agent_briefing:
+        augmented_persona_prompts = augmented_persona_prompts + "\n\n" + cross_agent_briefing
+    if user_answers_block:
+        augmented_persona_prompts = augmented_persona_prompts + "\n\n" + user_answers_block
+    # Phase 9 — Cross-domain flags. Every agent is asked to end with a structured
+    # block listing 0-3 findings that other domains MUST address. These flags are
+    # parsed after the fleet completes and routed into synthesis as binding
+    # cross-cutting concerns.
+    augmented_persona_prompts = augmented_persona_prompts + "\n\n" + CROSS_DOMAIN_FLAGS_INSTRUCTION
 
     async def staggered_agent(persona_key: str, stagger_delay: float):
         """Wrapper that waits stagger_delay seconds before running the agent."""
@@ -1821,8 +4033,9 @@ async def run_agent_fleet(
             anthropic_api_key,
             code_context,
             client_context,
-            db_persona_prompts + ("\n\n" + recon_context if recon_context else ""),
-            status_callback
+            augmented_persona_prompts,
+            status_callback,
+            topic=topic,
         )
 
     tasks = []
@@ -1845,15 +4058,19 @@ async def run_agent_fleet(
 
     monitor_job = asyncio.create_task(monitor_tasks())
 
-    # Stream results as each of the 15 agents completes
+    # Stream results as each of the 15 agents completes.
+    # Accumulate per-agent usage for the final cost summary.
+    all_usage: List[Dict[str, Any]] = []
     done_count = 0
-    while done_count < len(PERSONA_CONFIGS):
+    while done_count < len(active_personas):
         update = await queue.get()
         if update["event"] == "agent_result":
             done_count += 1
             result = update["data"]
             if result["status"] == "success":
                 collected_results[result["persona"]] = result["content"]
+            if result.get("usage"):
+                all_usage.append(result["usage"])
         yield update
 
     await monitor_job
@@ -1867,8 +4084,155 @@ async def run_agent_fleet(
             "sub_status": f"Reading all {len(collected_results)} reports and generating 3 strategic paths..."
         }
     }
-    synthesis_result = await run_synthesis_agent(collected_results, anthropic_api_key)
+
+    # Phase 9 — Cross-Domain Flag Routing. Pull cross-cutting concerns out of
+    # every agent's report and inject them into synthesis as binding items.
+    cross_domain_flags = parse_cross_domain_flags(collected_results)
+    if cross_domain_flags:
+        yield {
+            "event": "cross_domain_flags",
+            "data": {
+                "flags": cross_domain_flags,
+                "count": len(cross_domain_flags),
+                "message": f"{len(cross_domain_flags)} cross-domain flag(s) raised — synthesis will resolve each one",
+            }
+        }
+
+    # Situational Opus escalation: if confidence probes flagged a difficult run,
+    # bump synthesis to Opus 4.6 so the model can reason more deeply through
+    # contradictions and ambiguous evidence. Cost ~5x; worth it on hard cases.
+    escalate, escalate_reason = should_escalate_to_opus(probe_results)
+    synthesis_model = SYNTHESIS_MODEL_OPUS if escalate else SYNTHESIS_MODEL_SONNET
+    if escalate:
+        yield {
+            "event": "synthesis_escalated",
+            "data": {
+                "model": synthesis_model,
+                "reason": escalate_reason,
+                "thinking_budget": ESCALATE_THINKING_BUDGET,
+                "output_budget": ESCALATE_OUTPUT_BUDGET,
+            }
+        }
+        # Also surface in the agent status sub-text so it shows up live
+        yield {
+            "event": "agent_update",
+            "data": {
+                "key": "synthesis",
+                "status": "thinking",
+                "sub_status": f"⚡ Escalated to Opus — {escalate_reason}"
+            }
+        }
+
+    synthesis_result = await run_synthesis_agent(
+        collected_results,
+        anthropic_api_key,
+        model=synthesis_model,
+        escalation_reason=escalate_reason,
+        cross_domain_flags=cross_domain_flags,
+    )
+    if synthesis_result.get("usage"):
+        all_usage.append(synthesis_result["usage"])
     yield {"event": "agent_result", "data": synthesis_result}
+
+    # Phase 9 closed-loop: parse synthesis for the Cross-Domain Flag
+    # Resolutions section and emit each flag's ruling so the frontend can
+    # decorate the original flag panel.
+    if cross_domain_flags and synthesis_result.get("status") == "success":
+        try:
+            resolutions = parse_flag_resolutions(
+                synthesis_result.get("content", ""),
+                cross_domain_flags,
+            )
+            resolved_count = sum(1 for r in resolutions if r.get("resolved"))
+            yield {
+                "event": "flag_resolutions",
+                "data": {
+                    "resolutions": resolutions,
+                    "resolved_count": resolved_count,
+                    "total": len(resolutions),
+                    "message": (
+                        f"Synthesis resolved {resolved_count} of {len(resolutions)} cross-domain flag(s)"
+                        if resolved_count else
+                        "Synthesis did not explicitly resolve cross-domain flags — review the verdict"
+                    ),
+                }
+            }
+        except Exception as e:
+            logger.warning(f"flag resolution parsing failed: {e}")
+
+    # ── Phase 10: Agent effectiveness scoring ──────────────────────────────
+    # Score every agent on how much synthesis leaned on them. Custom agents
+    # (spawned via Phase 7B) get persisted scores so we can answer: "is this
+    # specialist actually pulling weight, or should we retire them?"
+    if synthesis_result.get("status") == "success":
+        try:
+            existing_custom_keys = list((answer_provider or {}).get("existing_custom_keys", []))
+            # merged_configs already includes custom agents (Phase 7B);
+            # if no customs were merged it just equals PERSONA_CONFIGS.
+            effectiveness = compute_agent_effectiveness(
+                synthesis_result.get("content", ""),
+                collected_results,
+                merged_configs,
+                custom_agent_keys=existing_custom_keys,
+            )
+            yield {
+                "event": "agent_effectiveness",
+                "data": {
+                    "scores": effectiveness,
+                    "top_agent": effectiveness[0] if effectiveness else None,
+                    "absent_count": sum(1 for s in effectiveness if s.get("verdict") == "absent"),
+                    "custom_agent_count": sum(1 for s in effectiveness if s.get("is_custom")),
+                }
+            }
+            # Persist scores for custom agents only — for the core fleet, the
+            # scores are useful but not worth schema overhead.
+            try:
+                project_id_for_persist = None
+                if isinstance(answer_provider, dict):
+                    project_id_for_persist = answer_provider.get("project_id")
+                if project_id_for_persist:
+                    custom_scores = [s for s in effectiveness if s.get("is_custom")]
+                    if custom_scores:
+                        try:
+                            import database as _db
+                            for s in custom_scores:
+                                _db.record_custom_agent_effectiveness(
+                                    project_id=project_id_for_persist,
+                                    persona_key=s["persona"],
+                                    score=s,
+                                )
+                        except Exception as e_db:
+                            logger.warning(f"effectiveness persistence failed: {e_db}")
+            except Exception as e_inner:
+                logger.warning(f"effectiveness persistence skipped: {e_inner}")
+        except Exception as e:
+            logger.warning(f"agent effectiveness scoring failed: {e}")
+
+    # ── Phase 7B: Analyse for specialist gaps & propose spawning ──────────
+    if confidence_gate and probe_results and collected_results:
+        try:
+            existing_custom_keys = list((answer_provider or {}).get("existing_custom_keys", []))
+            proposals = await analyse_for_specialists(
+                probe_results, collected_results, gemini_api_key,
+                existing_custom_keys=existing_custom_keys,
+            )
+            if proposals:
+                yield {
+                    "event": "specialist_proposals",
+                    "data": {
+                        "proposals": proposals,
+                        "message": (
+                            f"{len(proposals)} specialist agent(s) proposed to fill knowledge gaps. "
+                            "Approve to create them and re-run with an expanded fleet."
+                        ),
+                    }
+                }
+        except Exception as e:
+            logger.warning(f"Specialist proposal analysis failed (non-fatal): {e}")
+
+    # ── Yield aggregated usage summary ──────────────────────────────────────
+    summary = aggregate_usage(all_usage)
+    yield {"event": "usage_summary", "data": summary}
 
 
 async def run_agent_fleet_all(
@@ -1876,11 +4240,19 @@ async def run_agent_fleet_all(
     anthropic_api_key: str,
     code_context: str,
     client_context: str = "",
-    db_persona_prompts: str = ""
+    db_persona_prompts: str = "",
+    topic: str = "",
 ) -> List[Dict[str, Any]]:
     """Run all persona agents and return all results at once (used for legacy)."""
     results = []
-    async for update in run_agent_fleet(gemini_api_key, anthropic_api_key, code_context, client_context, db_persona_prompts):
+    async for update in run_agent_fleet(
+        gemini_api_key,
+        anthropic_api_key,
+        code_context,
+        client_context,
+        db_persona_prompts,
+        topic=topic,
+    ):
         if update["event"] == "agent_result":
             results.append(update["data"])
     return results

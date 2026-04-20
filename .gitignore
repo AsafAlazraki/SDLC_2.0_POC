@@ -4,3 +4,9 @@ __pycache__/
 .env
 .venv/
 venv/
+
+# Claude worktrees and local config
+.claude/
+
+# Generated artifact packs
+build_packs/
