@@ -350,7 +350,7 @@ The page is a comprehensive technical document with 10 sections:
 4. **The Fleet** — Interactive avatar gallery (6 grouped categories) with clickable agent cards. Each card shows the SVG avatar, name, model badge, context limit, and brief description. Clicking opens a detail modal with the agent's full identity, mission, investigation checklist, deliverables, and research mandate (parsed from `system_prompt`). The previous text-based listing is preserved under a collapsible "Full Agent Reference" `<details>` element.
 5. **Unscripted Debate** — Debate rules, 4 conflict arcs (Speed vs Safety, Build vs Buy vs AI vs Low-Code, Investment appetite, Unexpected alliance), synthesis closes the debate
 6. **Memory & Learning** — Run-over-run learning, living documents, self-evolving fleet, confidence-driven quality. Includes "How Memory Flows" visualization (Cold Start → Building Knowledge → Deep Intelligence)
-7. **Built-in Features** — 14 feature cards: Three Strategic Paths, Expert Debate, Q&A Chat, GitHub Issues, Architecture Diagrams, Jira Backlog, History, Client Context, Recon Pre-Pass, Confidence Pre-flight, Episodic Memory, Living Documentation, Dynamic Agent Spawning, Budget-Aware Recommendations
+7. **Built-in Features** — 20 feature cards covering: Three Strategic Paths, Expert Debate, Q&A Chat, GitHub Issues, Architecture Diagrams, Jira Backlog, History, Client Context, Recon Pre-Pass, Confidence Pre-flight, Episodic Memory, Living Documentation, Dynamic Agent Spawning, Budget-Aware Recommendations, Situational Opus Escalation, Image Vision, Cross-Domain Flag Routing, Closed-Loop Resolutions, Agent Effectiveness Scoring, Audio Transcription
 8. **SSE Streaming Architecture** — event type diagram with 8 event types (status, agent_update, agent_result, confidence_report, awaiting_answers, specialist_proposals, usage_summary, error), frontend handler behaviour for each
 9. **Full Tech Stack** — all libraries grouped by layer, including new persistence (Episodic Memory, Living Documents, Custom Agent Persistence)
 10. Agent Detail Modal (interactive overlay accessed from fleet gallery)
@@ -390,7 +390,7 @@ const state = {
 
 ---
 
-## Fourteen Major Features (All Implemented)
+## Twenty Major Features (All Implemented)
 
 ### 1. Synthesis Agent — "The Verdict" (Extended Thinking enabled)
 - 19th agent, runs after all 18 parallel agents complete
@@ -492,7 +492,7 @@ const state = {
 - Agents told to "tailor all recommendations to fit these constraints" and "flag anything that exceeds them"
 - PATH A/B/C recommendations become budget-scoped rather than generic
 
-### 20. Audio Transcription via Gemini (Phase 11)
+### 15. Audio Transcription via Gemini (Phase 11)
 - **Symmetry with Phase 8b image vision**: same dispatch pattern, same graceful degradation, same provenance header on output. The two together close the omnivorous input pipeline.
 - **Audio extractor**: `extract_audio_with_gemini(payload, mime, *, gemini_api_key, filename)` in `materials_extractor.py` runs Gemini 2.0 Flash on uploaded audio and returns a structured markdown summary with 6 sections: What this audio is, Transcript (with speaker turns + timestamps for >5min recordings), Key topics, Action items / commitments, Open questions, Notable quotes.
 - **Supported formats**: `.mp3`, `.wav`, `.m4a`, `.ogg`, `.flac`, `.webm`, `.aac`, `.aiff` — all natively supported by Gemini 2.0 Flash audio understanding.
@@ -503,7 +503,7 @@ const state = {
 - **Cost**: ~$0.0001 per minute of audio at Flash rates. Effectively free for typical voice memos / short calls.
 - **Tests**: 2 dedicated tests in `test_materials_extractor.py` — sync metadata-only fallback, async without key. All 12 materials tests pass.
 
-### 19. Agent Effectiveness Scoring (Phase 10)
+### 16. Agent Effectiveness Scoring (Phase 10)
 - **Open question answered**: LEARNINGS.md flagged "we don't know if spawned specialists are pulling weight in synthesis consensus." Phase 10 measures this directly.
 - **Scoring function**: `compute_agent_effectiveness(synthesis_content, collected_results, persona_configs, custom_agent_keys)` in `agent_engine.py`. Pure regex + section parsing. Runs in <50ms even for big synthesis reports.
 - **What's scored**: weighted citation count of agent name in scored synthesis sections. Section weights:
@@ -527,7 +527,7 @@ const state = {
   - "Which specialists pull weight on similar projects?" — historical scores can be compared across projects
   - Future: auto-recommendation in the borrow flow ("Project A has an MLOps agent averaging 78 — borrow them?")
 
-### 18. Closed-Loop Flag Resolution UX (Phase 9 polish)
+### 17. Closed-Loop Flag Resolution UX (Phase 9 polish)
 - **Problem solved**: Phase 9 routed flags into synthesis but the user only saw the flag panel — they had to manually scroll the verdict to find the resolutions section.
 - **Parser**: `parse_flag_resolutions(synthesis_content, original_flags)` extracts the `### Cross-Domain Flag Resolutions` section from synthesis output and matches each resolution back to its original flag using a 3-pass strategy:
   1. **Exact match**: source agent + target both match (canonical persona keys after alias normalisation)
@@ -539,7 +539,7 @@ const state = {
 - **Header dynamics**: panel header switches from "X flag(s) raised" to "X of Y resolved" once rulings arrive. Total chip turns green when fully resolved.
 - **Resilience**: synthesis omits the section → all flags stay UNRESOLVED, panel still useful. Synthesis uses different header level → header regex tolerates ## / ### / ####. Synthesis paraphrases agent names → fuzzy matching catches it.
 
-### 17. Cross-Domain Flag Routing — Inter-Agent Communication (Phase 9)
+### 18. Cross-Domain Flag Routing — Inter-Agent Communication (Phase 9)
 - **Problem solved**: Agents previously ran fully in parallel and never saw each other's findings until synthesis. The Security Engineer couldn't tell Performance about a perf-killing crypto operation; the QA Lead couldn't warn the Architect about test framework incompatibilities. Synthesis had to detect every cross-cutting concern unaided.
 - **Mechanism**: `CROSS_DOMAIN_FLAGS_INSTRUCTION` is appended to every agent's system prompt. Agents are asked to end their report with an optional `## 🔥 CROSS-DOMAIN FLAGS` section listing 0-3 findings formatted as `- **[TARGET_DOMAIN]** description`.
 - **Parser**: `parse_cross_domain_flags(collected_results)` is a pure regex parser (no API call). Tolerant of `## CROSS-DOMAIN FLAGS` (with or without 🔥), single/double asterisks, missing brackets, and `-`/`*` bullets. Self-flags are silently skipped.
@@ -550,7 +550,7 @@ const state = {
 - **No latency cost**: Flag parsing is sync regex on existing report text. Synthesis prompt grows by ~500 chars when flags exist. Zero additional API calls.
 - **Failure modes**: If no agent emits flags, no panel is shown and synthesis proceeds normally with no behaviour change.
 
-### 16. Image Vision via Gemini (Phase 8b)
+### 19. Image Vision via Gemini (Phase 8b)
 - **Vision extractor**: `extract_image_with_vision(payload, mime, *, gemini_api_key, filename)` in `materials_extractor.py` runs Gemini 2.0 Flash on uploaded images (PNG/JPG/JPEG/GIF/WEBP/BMP) and returns a structured markdown summary with 5 sections: What this image is, Visible content, Inferred purpose, Notable details, Open questions.
 - **Async dispatch**: New `extract_text_async(filename, mime, payload, *, gemini_api_key)` is the public async entry point. Routes images to vision when key is present; delegates to sync `extract_text()` for everything else.
 - **SVG handling**: SVGs are routed to the text decoder (XML), NOT vision — Gemini-vision rejects them and the source text is more useful anyway.
@@ -561,7 +561,7 @@ const state = {
 - **Vision summary as agent context**: Output text starts with `[Vision summary of image: <filename> — <mime>]\n\n<sections>` so agents reading the materials block see provenance and can cite the image by name.
 - **Tests**: 3 dedicated tests in `test_materials_extractor.py` — sync metadata-only fallback, async without key, SVG routing.
 
-### 15. Situational Opus Escalation (Phase 8)
+### 20. Situational Opus Escalation (Phase 8)
 - **Decision function**: `should_escalate_to_opus(probe_results)` in `agent_engine.py` returns `(escalate: bool, reason: str)` based on confidence-probe payload.
 - **Three triggers** (whichever fires first):
   - **Count**: ≥4 agents at low confidence (`ESCALATE_LOW_CONFIDENCE_COUNT = 4`)

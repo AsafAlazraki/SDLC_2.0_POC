@@ -1338,8 +1338,8 @@
 
                     <!-- Features -->
                     <div class="glass-card full-width">
-                        <h3 class="modern-heading">✨ BUILT-IN FEATURES — 14 AND COUNTING</h3>
-                        <p class="muted-text mb-4">Everything is integrated — no manual export steps, no copy-pasting between tools. Memory, learning, and agent evolution happen automatically.</p>
+                        <h3 class="modern-heading">✨ BUILT-IN FEATURES — 20 AND COUNTING</h3>
+                        <p class="muted-text mb-4">Everything is integrated — no manual export steps, no copy-pasting between tools. Memory, learning, and agent evolution happen automatically. Inter-agent communication and effectiveness scoring close the loop end-to-end.</p>
                         <div class="hiw-features-grid">
                             <div class="hiw-feature-card">
                                 <div class="hiw-feature-icon">🛤️</div>
@@ -1410,6 +1410,36 @@
                                 <div class="hiw-feature-icon">💰</div>
                                 <h5>Budget-Aware Recommendations</h5>
                                 <p>Set a budget range, timeline, and path preference (Conservative/Balanced/Transformative) on your project. Every agent receives this context and tailors their recommendations accordingly — no more "$2M rebuild" proposals when you have a $50K budget.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">⚡</div>
+                                <h5>Situational Opus Escalation</h5>
+                                <p>When confidence probes flag a difficult run (≥4 agents at low confidence, ≥30% of fleet struggling, or zero high-confidence anchors), synthesis is auto-bumped from Sonnet 4.6 to Opus 4.6 with larger thinking + output budgets. ~5× cost when it fires; the synthesis card shows you why.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">🖼️</div>
+                                <h5>Image Vision</h5>
+                                <p>Uploaded screenshots, wireframes, ER diagrams, and whiteboard photos are run through Gemini-vision and converted to a structured 5-section summary (What this is / Visible content / Inferred purpose / Notable details / Open questions) — agents who can't see images get readable provenance-tagged context.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">🔥</div>
+                                <h5>Cross-Domain Flag Routing</h5>
+                                <p>Agents emit a structured CROSS-DOMAIN FLAGS section listing 0-3 findings that critically affect other domains. Flags are parsed and routed into synthesis as binding items the verdict MUST resolve — turning the parallel fleet into a real conversation, not a one-way report dump.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">✅</div>
+                                <h5>Closed-Loop Flag Resolutions</h5>
+                                <p>Synthesis writes a dedicated "Cross-Domain Flag Resolutions" section. The frontend parses it back, matches each ruling to the original flag (3-pass fuzzy matching), and decorates the flag panel with green ✓ RESOLVED badges showing ruling + assigned owner.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">📊</div>
+                                <h5>Agent Effectiveness Scoring</h5>
+                                <p>After synthesis, every agent gets a 0-100 score based on weighted citation count across 9 sections (Consensus ×5, Flag Resolutions ×4, Critical Path ×3, Blind Spots ×−1 penalty). Each report card gets a verdict badge (★★★ heavy weight / ○ not cited). Custom specialists get a rolling history so you can decide whether to retire low performers.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">🎙️</div>
+                                <h5>Audio Transcription</h5>
+                                <p>Uploaded audio (mp3/wav/m4a/ogg/flac/webm/aac/aiff) is transcribed and summarised by Gemini's native audio understanding. 6-section structured output: transcript with speaker turns, key topics, action items / commitments, open questions, notable quotes — meetings and voice memos become first-class agent context.</p>
                             </div>
                         </div>
                     </div>
