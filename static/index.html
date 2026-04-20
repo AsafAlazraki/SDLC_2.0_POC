@@ -23,6 +23,9 @@
                     </select>
                 </div>
 
+                <button class="nav-btn" data-target="projects">
+                    <span class="icon">🗂️</span> Projects
+                </button>
                 <button class="nav-btn active" data-target="ingestion">
                     <span class="icon">📥</span> Ingestion
                 </button>
@@ -67,27 +70,378 @@
             </header>
 
             <div class="views-wrapper">
-                
+
+                <!-- Projects Workspace View -->
+                <section id="view-projects" class="view hidden fade-in">
+                    <div class="projects-workspace">
+                        <!-- Left column: tree + toolbar -->
+                        <aside class="projects-sidebar glass-card">
+                            <div class="projects-sidebar__header">
+                                <h3>Projects</h3>
+                                <button id="new-project-btn" class="primary-btn btn-sm" title="Create a new project">
+                                    <span>＋</span> New
+                                </button>
+                            </div>
+                            <div class="projects-sidebar__filters">
+                                <input type="search" id="projects-search" class="theme-input" placeholder="Filter projects..." />
+                            </div>
+                            <div id="projects-tree" class="projects-tree">
+                                <div class="projects-tree__empty">Loading projects...</div>
+                            </div>
+                        </aside>
+
+                        <!-- Right column: detail panel -->
+                        <div class="projects-detail">
+                            <!-- Empty state (shown when no project selected) -->
+                            <div id="project-empty-state" class="glass-card projects-empty-state">
+                                <div class="projects-empty-state__icon">🗂️</div>
+                                <h2>Select a project</h2>
+                                <p class="muted-text">
+                                    Pick one from the left — or create a new project to start gathering context,
+                                    uploading materials, and running the agent fleet against a focused goal.
+                                </p>
+                                <button id="new-project-btn-alt" class="primary-btn">＋ Create your first project</button>
+                            </div>
+
+                            <!-- Detail view (populated when a project is selected) -->
+                            <div id="project-detail" class="project-detail hidden">
+                                <div class="glass-card project-header">
+                                    <div class="project-header__titlerow">
+                                        <div>
+                                            <div class="project-breadcrumbs" id="project-breadcrumbs"></div>
+                                            <h2 id="project-name" class="project-header__name">—</h2>
+                                            <p id="project-goal" class="project-header__goal muted-text">Goal will appear here.</p>
+                                        </div>
+                                        <div class="project-header__actions">
+                                            <button id="project-edit-btn" class="secondary-btn btn-sm">✎ Edit</button>
+                                            <button id="project-new-subproject-btn" class="secondary-btn btn-sm">＋ Sub-project</button>
+                                            <button id="project-run-btn" class="primary-btn btn-sm">▶ Run agent fleet</button>
+                                        </div>
+                                    </div>
+                                    <div class="project-header__meta">
+                                        <span class="project-meta-chip" id="project-meta-client">Client: —</span>
+                                        <span class="project-meta-chip" id="project-meta-materials">Materials: 0</span>
+                                        <span class="project-meta-chip" id="project-meta-runs">Runs: 0</span>
+                                        <span class="project-meta-chip" id="project-meta-artifacts">Artifacts: 0</span>
+                                        <span class="project-meta-chip" id="project-meta-children">Sub-projects: 0</span>
+                                        <span class="project-meta-chip project-meta-cost" id="project-meta-cost" title="Total estimated cost across all runs"></span>
+                                    </div>
+                                </div>
+
+                                <!-- Tabs -->
+                                <div class="project-tabs" role="tablist">
+                                    <button class="project-tab active" data-tab="overview" role="tab">Overview</button>
+                                    <button class="project-tab" data-tab="materials" role="tab">Materials</button>
+                                    <button class="project-tab" data-tab="runs" role="tab">Runs</button>
+                                    <button class="project-tab" data-tab="artifacts" role="tab">Artifacts</button>
+                                    <button class="project-tab" data-tab="backlog" role="tab">Backlog</button>
+                                    <button class="project-tab" data-tab="documents" role="tab">📋 Documents</button>
+                                </div>
+
+                                <!-- Overview tab -->
+                                <div class="project-tab-panel active" data-panel="overview">
+                                    <div class="glass-card">
+                                        <h3>About this project</h3>
+                                        <p id="project-description" class="project-description">No description yet.</p>
+                                    </div>
+                                    <div class="glass-card">
+                                        <h3>Sub-projects</h3>
+                                        <div id="project-children-list" class="project-children-list">
+                                            <p class="muted-text">No sub-projects yet.</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Materials tab -->
+                                <div class="project-tab-panel hidden" data-panel="materials">
+                                    <div class="glass-card">
+                                        <h3>Materials</h3>
+                                        <p class="muted-text">
+                                            Drop files (PDF, DOCX, OutSystems <code>.oap</code> / <code>.zip</code>,
+                                            text, code, images), paste text, or attach URLs. Everything you add here
+                                            is rendered into a verbatim <em>## Project Materials</em> block injected
+                                            into every agent prompt on the next run.
+                                        </p>
+
+                                        <div id="material-dropzone" class="material-dropzone">
+                                            <div class="material-dropzone__icon">📎</div>
+                                            <div class="material-dropzone__text">
+                                                <strong>Drag &amp; drop files here</strong>
+                                                <br><span class="muted-text text-sm">or click to browse — PDF, DOCX, .oap / .zip, code, text, images</span>
+                                            </div>
+                                            <input type="file" id="material-file-input" multiple style="display:none" />
+                                            <div id="material-upload-status" class="material-upload-status"></div>
+                                        </div>
+
+                                        <details class="material-quickadd-toggle">
+                                            <summary>Or paste text / add a URL</summary>
+                                            <div class="project-material-quickadd">
+                                                <select id="material-kind" class="theme-input">
+                                                    <option value="text">Pasted text</option>
+                                                    <option value="url">URL</option>
+                                                </select>
+                                                <input type="text" id="material-title" class="theme-input" placeholder="Title (optional)" />
+                                                <textarea id="material-body" class="theme-input" rows="3" placeholder="Paste text here, or the URL..."></textarea>
+                                                <button id="add-material-btn" class="primary-btn btn-sm">Add material</button>
+                                            </div>
+                                        </details>
+
+                                        <div id="materials-list" class="materials-list"></div>
+                                    </div>
+
+                                    <!-- Material preview overlay -->
+                                    <div id="material-preview-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+                                        <div class="modal glass-card material-preview-modal">
+                                            <div class="modal-header">
+                                                <h3 id="material-preview-title">Material preview</h3>
+                                                <button class="modal-close" id="material-preview-close" aria-label="Close">×</button>
+                                            </div>
+                                            <div class="modal-body">
+                                                <div id="material-preview-meta" class="material-preview-meta"></div>
+                                                <pre id="material-preview-body" class="material-preview-body">Loading...</pre>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Runs tab -->
+                                <div class="project-tab-panel hidden" data-panel="runs">
+                                    <div class="glass-card">
+                                        <h3>Analysis runs</h3>
+                                        <p class="muted-text">
+                                            Every time you run the agent fleet against this project, it gets logged here.
+                                        </p>
+                                        <div id="runs-list" class="runs-list"></div>
+                                    </div>
+                                </div>
+
+                                <!-- Artifacts tab -->
+                                <div class="project-tab-panel hidden" data-panel="artifacts">
+                                    <div class="glass-card">
+                                        <h3>Artifacts</h3>
+                                        <p class="muted-text">
+                                            Reports, synthesis verdicts, build packs, kickoff packs — everything the
+                                            agents produced for this project.
+                                        </p>
+                                        <div id="artifacts-list" class="artifacts-list"></div>
+                                    </div>
+                                </div>
+
+                                <!-- Backlog tab — interactive Kanban board -->
+                                <div class="project-tab-panel hidden" data-panel="backlog">
+                                    <div class="glass-card backlog-shell">
+                                        <div class="backlog-toolbar">
+                                            <div class="backlog-toolbar__left">
+                                                <h3>Backlog</h3>
+                                                <span id="backlog-counts" class="muted-text text-sm">—</span>
+                                            </div>
+                                            <div class="backlog-toolbar__right">
+                                                <button id="backlog-new-btn" class="primary-btn btn-sm">＋ New story</button>
+                                                <button id="backlog-import-ba-btn" class="secondary-btn btn-sm">↻ Import from BA agent</button>
+                                                <button id="backlog-refresh-btn" class="secondary-btn btn-sm" title="Reload from server">⟳</button>
+                                            </div>
+                                        </div>
+                                        <div id="backlog-status" class="backlog-status muted-text text-sm"></div>
+                                        <div id="backlog-board" class="backlog-board-grid">
+                                            <!-- 4 columns rendered by script.js -->
+                                        </div>
+                                    </div>
+
+                                    <!-- Backlog item edit overlay -->
+                                    <div id="backlog-edit-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+                                        <div class="modal glass-card backlog-edit-modal">
+                                            <div class="modal-header">
+                                                <h3 id="backlog-edit-title">Edit story</h3>
+                                                <button class="modal-close" id="backlog-edit-close" aria-label="Close">×</button>
+                                            </div>
+                                            <div class="modal-body">
+                                                <div class="input-group">
+                                                    <label for="backlog-edit-title-input">Title</label>
+                                                    <input type="text" id="backlog-edit-title-input" class="theme-input" />
+                                                </div>
+                                                <div class="input-group">
+                                                    <label for="backlog-edit-story-input">User story</label>
+                                                    <textarea id="backlog-edit-story-input" class="theme-input" rows="2" placeholder="As a … I want … so that …"></textarea>
+                                                </div>
+                                                <div class="input-group">
+                                                    <label for="backlog-edit-ac-input">Acceptance criteria <span class="muted-text text-sm">(one per line)</span></label>
+                                                    <textarea id="backlog-edit-ac-input" class="theme-input" rows="5" placeholder="Wizard has 4 steps&#10;Email + phone verification"></textarea>
+                                                </div>
+                                                <div class="backlog-edit-row">
+                                                    <div class="input-group">
+                                                        <label for="backlog-edit-points-input">Points</label>
+                                                        <input type="number" id="backlog-edit-points-input" class="theme-input" min="0" max="40" />
+                                                    </div>
+                                                    <div class="input-group">
+                                                        <label for="backlog-edit-priority-input">Priority</label>
+                                                        <select id="backlog-edit-priority-input" class="theme-input">
+                                                            <option value="high">High</option>
+                                                            <option value="med">Medium</option>
+                                                            <option value="low">Low</option>
+                                                        </select>
+                                                    </div>
+                                                    <div class="input-group">
+                                                        <label for="backlog-edit-status-input">Status</label>
+                                                        <select id="backlog-edit-status-input" class="theme-input">
+                                                            <option value="backlog">Backlog</option>
+                                                            <option value="todo">To Do</option>
+                                                            <option value="in_progress">In Progress</option>
+                                                            <option value="done">Done</option>
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                                <div class="input-group">
+                                                    <label for="backlog-edit-epic-input">Epic <span class="muted-text text-sm">(optional)</span></label>
+                                                    <input type="text" id="backlog-edit-epic-input" class="theme-input" />
+                                                </div>
+                                            </div>
+                                            <div class="modal-footer backlog-edit-footer">
+                                                <button id="backlog-edit-delete" class="secondary-btn btn-sm" style="margin-right:auto; color:#f87171;">🗑 Delete</button>
+                                                <button id="backlog-edit-cancel" class="secondary-btn btn-sm">Cancel</button>
+                                                <button id="backlog-edit-save" class="primary-btn btn-sm">Save</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Documents tab (Phase 7 — Living Knowledge) -->
+                                <div class="project-tab-panel hidden" data-panel="documents">
+                                    <div class="glass-card">
+                                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+                                            <div>
+                                                <h3>📋 Project Documents</h3>
+                                                <p class="muted-text text-sm">Living documents updated after every analysis run — lessons learned, risk register, tech debt, decision log, and agent knowledge notes.</p>
+                                            </div>
+                                            <button id="docs-refresh-btn" class="secondary-btn btn-sm" title="Reload from server">⟳ Refresh</button>
+                                        </div>
+                                        <div id="project-docs-list" class="project-docs-list">
+                                            <p class="muted-text">No documents yet. Run an analysis to generate project documentation.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Project Create / Edit Modal -->
+                <div id="project-modal-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+                    <div class="modal glass-card project-modal">
+                        <div class="modal-header">
+                            <h3 id="project-modal-title">New Project</h3>
+                            <button class="modal-close" id="project-modal-close" aria-label="Close">×</button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="input-group">
+                                <label for="project-form-name">Name</label>
+                                <input type="text" id="project-form-name" class="theme-input" placeholder="e.g. Loan Originations Migration" />
+                            </div>
+                            <div class="input-group">
+                                <label for="project-form-goal">Goal <span class="muted-text text-sm">(What are we trying to achieve?)</span></label>
+                                <textarea id="project-form-goal" class="theme-input" rows="2" placeholder="e.g. Migrate the loan originations system from O11 to ODC with zero downtime."></textarea>
+                            </div>
+                            <div class="input-group">
+                                <label for="project-form-description">Context / description</label>
+                                <textarea id="project-form-description" class="theme-input" rows="4" placeholder="Any background the agents should know about."></textarea>
+                            </div>
+                            <div class="input-group">
+                                <label for="project-form-client">Client (optional)</label>
+                                <select id="project-form-client" class="theme-input">
+                                    <option value="">-- Unassigned --</option>
+                                </select>
+                            </div>
+                            <div class="input-group project-form-parent-group hidden">
+                                <label for="project-form-parent">Parent project</label>
+                                <input type="text" id="project-form-parent" class="theme-input" readonly />
+                            </div>
+                            <div class="input-group project-form-inherit-group hidden">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="project-form-inherits" checked />
+                                    Inherit materials from parent project
+                                </label>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button id="project-form-cancel" class="secondary-btn">Cancel</button>
+                            <button id="project-form-save" class="primary-btn">Save project</button>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Ingestion View -->
                 <section id="view-ingestion" class="view active fade-in">
                     <div class="glass-card full-width">
                         <div class="card-header">
-                            <h3>Analyze a Codebase</h3>
-                            <p>Point at a public GitHub repo, paste code, or upload files.</p>
+                            <h3>Launch a Discovery Run</h3>
+                            <p>Analyse an existing codebase, or investigate a topic across a set of sources.</p>
                         </div>
-                        
-                        <!-- GitHub URL Input -->
-                        <div class="github-input-section" style="margin-bottom: 24px;">
-                            <label class="input-label">
-                                <span style="font-size: 1.2em;">🔗</span> GitHub Repository URL
-                            </label>
-                            <div style="display: flex; gap: 12px; margin-top: 8px;">
-                                <input type="text" id="github-url" placeholder="https://github.com/owner/repo" 
-                                    style="flex: 1; padding: 14px 16px; background: rgba(10,10,15,0.6); border: 1px solid var(--border-subtle); border-radius: 10px; color: var(--text-main); font-family: 'Space Grotesk', monospace; font-size: 0.95rem; transition: border-color 0.3s;">
-                                <button id="analyze-repo-btn" class="primary-btn">
-                                    <span>🚀</span> Launch Agent Fleet
-                                    <span class="loader" id="repo-loader" style="display:none;"></span>
-                                </button>
+
+                        <!-- Mode Tabs -->
+                        <div class="mode-tabs" role="tablist" aria-label="Analysis mode">
+                            <button type="button" class="mode-tab active" data-mode="repo" role="tab" aria-selected="true">
+                                <span class="mode-tab-icon">📦</span>
+                                <span class="mode-tab-title">Repository Mode</span>
+                                <span class="mode-tab-sub">Audit an existing codebase</span>
+                            </button>
+                            <button type="button" class="mode-tab" data-mode="topic" role="tab" aria-selected="false">
+                                <span class="mode-tab-icon">🧭</span>
+                                <span class="mode-tab-title">Topic Mode</span>
+                                <span class="mode-tab-sub">Plan a build from a topic + sources</span>
+                            </button>
+                        </div>
+
+                        <!-- Repository Mode -->
+                        <div class="mode-panel" id="mode-panel-repo" data-mode="repo">
+                            <div class="github-input-section" style="margin-bottom: 24px;">
+                                <label class="input-label">
+                                    <span style="font-size: 1.2em;">🔗</span> GitHub Repository URL
+                                </label>
+                                <div style="display: flex; gap: 12px; margin-top: 8px;">
+                                    <input type="text" id="github-url" placeholder="https://github.com/owner/repo"
+                                        style="flex: 1; padding: 14px 16px; background: rgba(10,10,15,0.6); border: 1px solid var(--border-subtle); border-radius: 10px; color: var(--text-main); font-family: 'Space Grotesk', monospace; font-size: 0.95rem; transition: border-color 0.3s;">
+                                    <button id="analyze-repo-btn" class="primary-btn">
+                                        <span>🚀</span> Launch Agent Fleet
+                                        <span class="loader" id="repo-loader" style="display:none;"></span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Topic Mode -->
+                        <div class="mode-panel hidden" id="mode-panel-topic" data-mode="topic">
+                            <div class="topic-input-section" style="margin-bottom: 24px;">
+                                <label class="input-label" for="topic-input">
+                                    <span style="font-size: 1.2em;">🎯</span> Topic / Investigation Brief
+                                </label>
+                                <textarea id="topic-input"
+                                    placeholder="e.g. Rebuild the OutSystems 11 Case Management Framework as a greenfield ODC application"
+                                    class="topic-field topic-field--single"></textarea>
+
+                                <label class="input-label" for="topic-urls" style="margin-top: 18px;">
+                                    <span style="font-size: 1.2em;">🔗</span> Source URLs
+                                    <span style="font-weight:400; color: var(--text-muted); font-size: 0.8rem; margin-left: 6px;">
+                                        (one per line — docs, articles, Forge pages, platform references)
+                                    </span>
+                                </label>
+                                <textarea id="topic-urls"
+                                    placeholder="https://www.outsystems.com/forge/component-overview/.../case-management-framework&#10;https://success.outsystems.com/documentation/.../business_process_technology&#10;https://docs.outsystems.com/platform/architecture"
+                                    class="topic-field topic-field--urls"></textarea>
+
+                                <label class="input-label" for="topic-repo" style="margin-top: 18px;">
+                                    <span style="font-size: 1.2em;">📦</span> Optional reference repo
+                                    <span style="font-weight:400; color: var(--text-muted); font-size: 0.8rem; margin-left: 6px;">
+                                        (existing code to ground the plan in — leave blank if none)
+                                    </span>
+                                </label>
+                                <input type="text" id="topic-repo" placeholder="https://github.com/owner/repo"
+                                    class="topic-field topic-field--repo">
+
+                                <div style="display: flex; gap: 12px; margin-top: 20px; justify-content: flex-end;">
+                                    <button id="analyze-topic-btn" class="primary-btn">
+                                        <span>🚀</span> Launch Topic Investigation
+                                        <span class="loader" id="topic-loader" style="display:none;"></span>
+                                    </button>
+                                </div>
                             </div>
                         </div>
 
@@ -128,6 +482,17 @@
                                 </div>
                             </div>
                         </details>
+
+                        <!-- Phase 5 — Fleet options (frugal mode) -->
+                        <div style="display: flex; align-items: center; gap: 14px; margin: 14px 0 20px; padding: 10px 14px; background: rgba(0,0,0,0.18); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.85rem; color: rgba(255,255,255,0.8);">
+                                <input type="checkbox" id="frugal-mode-toggle" style="accent-color: var(--primary, #00f2ff);">
+                                Frugal mode
+                            </label>
+                            <span class="muted-text" style="font-size: 0.78rem;">
+                                Skip OutSystems agents — saves ~20% of Gemini tokens. Use when OS migration isn't relevant.
+                            </span>
+                        </div>
 
                         <div class="divider-line" style="border-bottom: 1px solid var(--border-subtle); margin: 20px 0; position: relative;">
                             <span style="position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: rgba(30,30,45,0.9); padding: 0 16px; color: var(--text-muted); font-size: 0.85rem;">OR paste / upload files</span>
@@ -176,6 +541,47 @@
                             <div id="agent-status-grid" class="agent-status-grid"></div>
                         </div>
 
+                        <!-- Phase 6 — Agent Confidence Panel -->
+                        <div id="confidence-panel" class="confidence-panel hidden">
+                            <div class="confidence-header">
+                                <h4><span class="pulse-icon">🧠</span> AGENT CONFIDENCE CHECK</h4>
+                                <p id="confidence-summary-text" class="muted-text text-sm"></p>
+                            </div>
+                            <div id="confidence-grid" class="confidence-grid"></div>
+                            <div id="confidence-qa" class="confidence-qa hidden">
+                                <div class="confidence-qa__header">
+                                    <h5>🙋 Agents Need Your Input</h5>
+                                    <p class="muted-text text-sm">Answer their questions to improve analysis quality. Provide URLs for agents to research. Skip to proceed with what they know.</p>
+                                </div>
+                                <div id="confidence-questions-list" class="confidence-questions-list"></div>
+                                <div class="confidence-qa__extras">
+                                    <label class="input-label" style="font-size:0.8rem;">Additional URLs for agents to research</label>
+                                    <textarea id="confidence-extra-urls" placeholder="Paste URLs (one per line) — agents will fetch and read these before running"
+                                        style="width:100%; height:60px; margin-top:4px; padding: 10px 12px; background: rgba(10,10,15,0.6); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-main); font-size: 0.85rem; resize: vertical;"></textarea>
+                                    <label class="input-label" style="font-size:0.8rem; margin-top: 10px;">Global answer (applies to all agents)</label>
+                                    <textarea id="confidence-global-answer" placeholder="e.g. We use OutSystems ODC, our target platform is AWS, the team has 6 developers..."
+                                        style="width:100%; height:60px; margin-top:4px; padding: 10px 12px; background: rgba(10,10,15,0.6); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-main); font-size: 0.85rem; resize: vertical;"></textarea>
+                                </div>
+                                <div class="confidence-qa__actions">
+                                    <button id="confidence-submit-btn" class="primary-btn btn-sm">✅ Submit Answers & Launch Fleet</button>
+                                    <button id="confidence-skip-btn" class="secondary-btn btn-sm">⏭️ Skip — Launch with Current Knowledge</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Phase 7B — Specialist Agent Proposals -->
+                        <div id="specialist-panel" class="specialist-panel hidden">
+                            <div class="specialist-header">
+                                <h4><span>🔬</span> SPECIALIST AGENTS PROPOSED</h4>
+                                <p id="specialist-summary-text" class="muted-text text-sm"></p>
+                            </div>
+                            <div id="specialist-proposals-list" class="specialist-proposals-list"></div>
+                            <div class="specialist-actions">
+                                <button id="specialist-approve-btn" class="primary-btn btn-sm">✅ Create Selected & Re-run</button>
+                                <button id="specialist-dismiss-btn" class="secondary-btn btn-sm">Dismiss</button>
+                            </div>
+                        </div>
+
                         <div class="dashboard-controls" style="margin-top: 20px; display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
                             <button id="collapse-all-btn" class="secondary-btn btn-sm">Collapse All</button>
                             <button id="expand-all-btn" class="secondary-btn btn-sm">Expand All</button>
@@ -183,6 +589,31 @@
                             <button id="generate-kickoff-btn" class="primary-btn btn-sm" style="background: linear-gradient(135deg, #f59e0b, #d97706);">🚀 Generate Team Kickoff Pack</button>
                             <button id="enter-meeting-btn" class="primary-btn btn-sm" style="display:none; background: linear-gradient(135deg, #7c3aed, #4f46e5);">🎙️ Enter Meeting Room</button>
                         </div>
+                    </div>
+
+                    <!-- Build Pack Banner — appears once synthesis completes -->
+                    <div id="build-pack-banner" class="glass-card full-width build-pack-banner hidden">
+                        <div class="build-pack-banner__content">
+                            <div class="build-pack-banner__headline">
+                                <span class="build-pack-banner__emoji">📦</span>
+                                <div>
+                                    <h3 class="build-pack-banner__title">Generate Build Pack</h3>
+                                    <p class="build-pack-banner__sub">All 19 agents have reported. Compile the verdict + every specialist report into a downloadable implementation folder — entities, OpenAPI, user stories, sprint plan, ODC import guide, migration strategy and more.</p>
+                                </div>
+                            </div>
+                            <div class="build-pack-banner__actions">
+                                <button id="generate-build-pack-btn" class="primary-btn build-pack-btn">🛠️ Generate Build Pack</button>
+                                <a id="build-pack-download-link" class="primary-btn build-pack-btn build-pack-btn--download hidden" href="#" download>⬇️ Download Pack</a>
+                            </div>
+                        </div>
+                        <div id="build-pack-progress" class="build-pack-progress hidden">
+                            <div class="build-pack-progress__stage" data-stage="analyzing_reports">1. Reviewing reports</div>
+                            <div class="build-pack-progress__stage" data-stage="compiling_spec">2. Compiling spec</div>
+                            <div class="build-pack-progress__stage" data-stage="generating_files">3. Generating files</div>
+                            <div class="build-pack-progress__stage" data-stage="zipping">4. Zipping</div>
+                            <div class="build-pack-progress__stage" data-stage="complete">5. Ready</div>
+                        </div>
+                        <div id="build-pack-status" class="build-pack-status"></div>
                     </div>
 
                     <!-- Modernisation Roadmap Summary (New) -->
@@ -314,13 +745,23 @@
                             </div>
                             <div id="synthesis-content" class="report-content"></div>
                         </div>
-                        <!-- Team Kickoff Pack (generated on demand) -->
-                        <div class="glass-card full-width report-card verdict-card" id="report-kickoff" style="display: none; border-left: 4px solid #f59e0b;">
+                        <!-- Team Kickoff Pack (generated on demand, SSE-streamed multi-doc) -->
+                        <div class="glass-card full-width report-card verdict-card kickoff-pack-card" id="report-kickoff" style="display: none; border-left: 4px solid #f59e0b;">
                             <div class="report-card-header verdict-header" style="background: linear-gradient(135deg, rgba(245,158,11,0.15), rgba(217,119,6,0.1));">
                                 <span class="persona-badge" style="color: #f59e0b;">🚀 Team Kickoff Pack — Mobilisation Brief</span>
-                                <span class="verdict-subtitle">Sprint 0 plan · Team composition · RACI · Day 1 decisions · Risk briefing</span>
+                                <span class="verdict-subtitle">8 focused mobilisation documents · Exec one-pager · Sprint 0 · RACI · Day-1 decisions · Risk briefing · KPIs</span>
+                                <a id="kickoff-pack-download-link" class="primary-btn btn-sm hidden" style="margin-left:auto; background: linear-gradient(135deg, #f59e0b, #d97706);" href="#" download>⬇️ Download Pack (zip)</a>
                             </div>
-                            <div id="kickoff-content" class="report-content"></div>
+                            <div id="kickoff-pack-progress" class="kickoff-pack-progress hidden">
+                                <div class="kickoff-pack-progress__stage" data-stage="analyzing">1. Reviewing</div>
+                                <div class="kickoff-pack-progress__stage" data-stage="compiling_spec">2. Compiling spec</div>
+                                <div class="kickoff-pack-progress__stage" data-stage="generating_files">3. Generating docs</div>
+                                <div class="kickoff-pack-progress__stage" data-stage="zipping">4. Bundling</div>
+                                <div class="kickoff-pack-progress__stage" data-stage="complete">5. Ready</div>
+                            </div>
+                            <div id="kickoff-pack-status" class="kickoff-pack-status"></div>
+                            <ul id="kickoff-pack-files" class="kickoff-pack-files"></ul>
+                            <div id="kickoff-content" class="report-content" style="display:none;"></div>
                         </div>
                     </div>
                 </section>
@@ -367,21 +808,23 @@
                     <div class="glass-card full-width hiw-hero">
                         <div class="hiw-hero-inner">
                             <div class="hiw-hero-badge">UNDER THE HOOD</div>
-                            <h2 class="hiw-hero-title">Multi-Agent Hybrid Intelligence</h2>
-                            <p class="hiw-hero-sub">Drop in a GitHub URL. In minutes, 19 world-class AI specialists — split across two frontier models — independently analyse your codebase from every professional angle simultaneously, including dedicated OutSystems/ODC specialists who assess the low-code platform path. Then a 20th extended-thinking synthesis pass resolves contradictions and produces three distinct strategic paths forward.</p>
+                            <h2 class="hiw-hero-title">Multi-Agent Hybrid Intelligence with Memory</h2>
+                            <p class="hiw-hero-sub">Drop in a GitHub URL. In minutes, 19 world-class AI specialists — split across two frontier models — independently analyse your codebase from every professional angle simultaneously. Before launching, each agent self-assesses its confidence and can ask you clarifying questions. High-confidence agents brief struggling ones. A 20th extended-thinking synthesis resolves contradictions and produces three strategic paths forward. After every run, the system learns — building cross-run episodic memory, generating living documentation, and proposing new specialist agents for gaps it detected.</p>
                             <div class="hiw-stat-row">
-                                <div class="hiw-stat"><span class="hiw-stat-num">19</span><span class="hiw-stat-label">AI Agents</span></div>
+                                <div class="hiw-stat"><span class="hiw-stat-num">19+</span><span class="hiw-stat-label">AI Agents</span></div>
                                 <div class="hiw-stat"><span class="hiw-stat-num">2</span><span class="hiw-stat-label">Frontier Models</span></div>
                                 <div class="hiw-stat"><span class="hiw-stat-num">18</span><span class="hiw-stat-label">Expert Domains</span></div>
                                 <div class="hiw-stat"><span class="hiw-stat-num">3</span><span class="hiw-stat-label">Strategic Paths</span></div>
+                                <div class="hiw-stat"><span class="hiw-stat-num">6</span><span class="hiw-stat-label">Living Docs</span></div>
+                                <div class="hiw-stat"><span class="hiw-stat-num">∞</span><span class="hiw-stat-label">Cross-Run Memory</span></div>
                             </div>
                         </div>
                     </div>
 
                     <!-- Pipeline Phases -->
                     <div class="glass-card full-width">
-                        <h3 class="modern-heading">⚡ THE PIPELINE — 5 PHASES FROM URL TO VERDICT</h3>
-                        <p class="muted-text mb-4">Every analysis runs the same deterministic pipeline. Here's exactly what happens, in order.</p>
+                        <h3 class="modern-heading">⚡ THE PIPELINE — 8 PHASES FROM URL TO LIVING KNOWLEDGE</h3>
+                        <p class="muted-text mb-4">Every analysis runs the same deterministic pipeline — but now with memory, confidence gating, and post-run learning. Here's exactly what happens, in order.</p>
 
                         <div class="hiw-pipeline">
 
@@ -431,6 +874,37 @@
                             </div>
 
                             <div class="hiw-phase">
+                                <div class="hiw-phase-num">1.5</div>
+                                <div class="hiw-phase-content">
+                                    <div class="hiw-phase-header">
+                                        <span class="hiw-phase-icon">🧠</span>
+                                        <h4>Episodic Memory Loading</h4>
+                                        <span class="hiw-phase-model neutral-badge">Supabase — Zero API cost</span>
+                                    </div>
+                                    <p>If this repository has been analysed before under a project, the engine loads <strong>episodic memory</strong> — a structured summary of what previous runs found, what changed, and what the agents learned. This is not raw history; it's distilled institutional knowledge.</p>
+                                    <p class="hiw-phase-detail">Episodic memory includes: the number of previous runs, per-agent findings summaries (truncated to 2K chars each), the last 3 synthesis verdicts, and all living documents (lessons learned, decision log, risk register, tech debt tracker). This context is injected into every agent's prompt so they don't repeat themselves — they build on prior knowledge.</p>
+                                    <div class="hiw-detail-grid">
+                                        <div class="hiw-detail-item">
+                                            <strong>Project-scoped</strong>
+                                            <span>Memory is tied to projects, not repositories. The same repo analysed under different projects has separate memory tracks.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>Run history (last 5)</strong>
+                                            <span>Agent findings from the most recent 5 runs are summarised and injected — enough context without bloating prompts.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>Living documents</strong>
+                                            <span>6 auto-generated documents (lessons learned, decision log, risk register, etc.) are loaded and made available to every agent.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>Graceful degradation</strong>
+                                            <span>If no project is selected or no prior runs exist, memory is empty — the fleet launches normally without it.</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="hiw-phase">
                                 <div class="hiw-phase-num">2</div>
                                 <div class="hiw-phase-content">
                                     <div class="hiw-phase-header">
@@ -456,6 +930,37 @@
                             </div>
 
                             <div class="hiw-phase">
+                                <div class="hiw-phase-num">2.5</div>
+                                <div class="hiw-phase-content">
+                                    <div class="hiw-phase-header">
+                                        <span class="hiw-phase-icon">🎯</span>
+                                        <h4>Confidence Pre-flight Check</h4>
+                                        <span class="hiw-phase-model gemini-badge">Gemini 2.0 Flash</span>
+                                    </div>
+                                    <p>Before the full fleet runs, each agent performs a fast <strong>self-assessment</strong> on a small sample (15K chars) of their filtered context. They return a structured confidence level — <strong>High</strong>, <strong>Medium</strong>, or <strong>Low</strong> — along with specific gaps in information and clarifying questions for the user.</p>
+                                    <p class="hiw-phase-detail">This is where the engine becomes <em>interactive</em>. The fleet pauses. You see each agent's confidence level, what they already know, what they're unsure about, and what questions they have. You can answer questions, provide additional context URLs, or skip straight to analysis. High-confidence agents' preliminary findings are automatically shared with struggling agents via <strong>cross-agent briefing</strong>.</p>
+                                    <div class="hiw-detail-grid">
+                                        <div class="hiw-detail-item">
+                                            <strong>Confidence levels</strong>
+                                            <span><span style="color:#22c55e;">● High</span> — Agent has enough context. <span style="color:#f59e0b;">● Medium</span> — Could benefit from more info. <span style="color:#ef4444;">● Low</span> — Significant gaps detected.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>Cross-agent briefing</strong>
+                                            <span>High-confidence agents share their preliminary findings with medium/low agents — like a senior colleague giving a heads-up before a meeting.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>User answers</strong>
+                                            <span>Your answers and any URLs you provide are injected directly into the asking agent's prompt as verified context. Agents skip guessing and use your ground truth.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>Optional gate</strong>
+                                            <span>You can skip the Q&A entirely — the fleet launches with whatever confidence it has. No delays if you're in a hurry.</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="hiw-phase">
                                 <div class="hiw-phase-num">3</div>
                                 <div class="hiw-phase-content">
                                     <div class="hiw-phase-header">
@@ -463,7 +968,7 @@
                                         <h4>Parallel Fleet Execution</h4>
                                         <span class="hiw-phase-model neutral-badge">asyncio — Python</span>
                                     </div>
-                                    <p>All 16 specialist agents are created as async tasks and run concurrently. Results are yielded as they arrive via <code>asyncio.as_completed()</code> — the fastest agent's report appears in the UI first, regardless of launch order. Results stream to the browser over <strong>Server-Sent Events (SSE)</strong> in real time. Each agent's prompt includes a forward-thinking technology mandate: they must consider AI tools, low-code alternatives, and automation alongside traditional approaches.</p>
+                                    <p>All 18 specialist agents — plus any <strong>custom specialists</strong> spawned from previous runs — are created as async tasks and run concurrently. Results are yielded as they arrive via <code>asyncio.as_completed()</code> — the fastest agent's report appears in the UI first, regardless of launch order. Results stream to the browser over <strong>Server-Sent Events (SSE)</strong> in real time. Each agent's prompt includes: the codebase context, recon findings, episodic memory, any user-provided answers from the confidence Q&A, cross-agent briefing context, and the forward-thinking technology mandate.</p>
 
                                     <div class="hiw-safeguards">
                                         <h5>Rate Limit Safeguards (5-Layer Defence)</h5>
@@ -499,7 +1004,7 @@
                                         <h4>Synthesis — "The Verdict"</h4>
                                         <span class="hiw-phase-model claude-badge">Claude Sonnet 4.6 + Extended Thinking</span>
                                     </div>
-                                    <p>After all 16 agents complete, a 17th sequential call reads every report concatenated and produces the master action plan. This is the only step that <em>knows about all other agents</em> — it resolves contradictions, identifies consensus (findings validated by 3+ independent agents), fills blind spots, and produces <strong>three distinct strategic paths forward</strong>: Conservative, Balanced, and Transformative — each with specific tools, timelines, and investment levels tailored to this codebase.</p>
+                                    <p>After all 18+ agents complete, a sequential synthesis call reads every report concatenated and produces the master action plan. This is the only step that <em>knows about all other agents</em> — it resolves contradictions, identifies consensus (findings validated by 3+ independent agents), fills blind spots, and produces <strong>three distinct strategic paths forward</strong>: Conservative, Balanced, and Transformative — each with specific tools, timelines, and investment levels tailored to this codebase. The synthesis output then triggers Phase 5 (Living Documentation) and Phase 6 (Dynamic Agent Spawning) automatically.</p>
                                     <p class="hiw-phase-detail"><strong>Extended Thinking is enabled</strong> with an 8,000-token private reasoning budget. Before writing a single word of the final report, Claude reasons through the contradictions in a private scratchpad — e.g., "Performance says cache aggressively; Security flags caching as a risk vector — which wins and why?" The thinking blocks are discarded before storing the output. Only the authoritative final answer is shown. Output budget is 10,000 tokens.</p>
                                     <div class="hiw-verdict-sections">
                                         <span>Executive Summary</span>
@@ -529,6 +1034,76 @@
                                             <span class="hiw-path-label">PATH C</span>
                                             <strong>Transformative</strong>
                                             <p>Dedicated squad · $250K+ · 18-24 months · AI-native rebuild</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="hiw-phase">
+                                <div class="hiw-phase-num">5</div>
+                                <div class="hiw-phase-content">
+                                    <div class="hiw-phase-header">
+                                        <span class="hiw-phase-icon">📚</span>
+                                        <h4>Living Documentation Generation</h4>
+                                        <span class="hiw-phase-model gemini-badge">Gemini 2.0 Flash (free tier)</span>
+                                    </div>
+                                    <p>After synthesis completes, the engine automatically generates or <strong>incrementally updates</strong> six living documents for the project. These aren't static snapshots — each document is aware of its previous version and evolves with every run.</p>
+                                    <p class="hiw-phase-detail">A single Gemini Flash call receives: the current synthesis, all agent reports, any existing versions of each document, and the project metadata. It produces all 6 documents in one pass — effectively free on the Gemini free tier. Documents are stored as project artefacts in Supabase and are available from the project's Documents tab.</p>
+                                    <div class="hiw-detail-grid">
+                                        <div class="hiw-detail-item">
+                                            <strong>📊 Run Summary</strong>
+                                            <span>Executive snapshot of this run — key findings, agent consensus, what changed since last time. Your quick-reference card.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>📝 Lessons Learned</strong>
+                                            <span>Cumulative knowledge: what worked, what didn't, recurring patterns, and recommendations that agents keep making across runs.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>📋 Decision Log</strong>
+                                            <span>Architecture decisions, technology choices, and trade-offs identified — timestamped and attributed to the agent that flagged them.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>⚠️ Risk Register</strong>
+                                            <span>Living risk register: new risks added, existing risks re-scored, mitigated risks closed. Cross-referenced with Security, Compliance, and DevSecOps findings.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>🔧 Tech Debt Tracker</strong>
+                                            <span>Every piece of tech debt flagged by any agent, scored by severity, effort to fix, and business impact. Tracks whether debt is growing or shrinking.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>🤖 Agent Notes</strong>
+                                            <span>Internal agent observations that don't fit other categories — anomalies, gut instincts, "something feels off about this module" notes for future runs.</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="hiw-phase">
+                                <div class="hiw-phase-num">6</div>
+                                <div class="hiw-phase-content">
+                                    <div class="hiw-phase-header">
+                                        <span class="hiw-phase-icon">🔬</span>
+                                        <h4>Dynamic Agent Spawning</h4>
+                                        <span class="hiw-phase-model neutral-badge">Gemini Flash + Claude Sonnet</span>
+                                    </div>
+                                    <p>After synthesis, the engine performs automated <strong>gap analysis</strong>: did the existing fleet miss something important? If it detects coverage gaps — say, the repo has a complex event-driven architecture but no Event Sourcing specialist, or heavy ML pipelines but no MLOps agent — it proposes up to 3 new specialist agents.</p>
+                                    <p class="hiw-phase-detail">You see the proposals with their name, focus area, and why the gap was detected. Check the ones you want, dismiss the rest. Approved agents are created via a <strong>two-pass persona generation</strong>: Gemini Flash drafts the specialist's full persona (identity, mission, investigation checklist, deliverables, research mandate), then Claude Sonnet reviews and refines it for rigour. Cost: ~$0.02-0.05 per agent. Created agents persist per project and are available for all future runs.</p>
+                                    <div class="hiw-detail-grid">
+                                        <div class="hiw-detail-item">
+                                            <strong>Project-scoped</strong>
+                                            <span>Custom agents belong to the project they were created for. They appear in the fleet automatically on every subsequent run.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>Borrowable</strong>
+                                            <span>Other projects can see and borrow specialists from sibling projects — a "GraphQL Specialist" created for Project A can be pulled into Project B.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>Two-pass quality</strong>
+                                            <span>Flash drafts fast and cheap; Sonnet reviews for depth, accuracy, and proper investigation structure. Best of both models.</span>
+                                        </div>
+                                        <div class="hiw-detail-item">
+                                            <strong>Re-run integration</strong>
+                                            <span>After specialists are created, you're offered a re-run. All agents — original + new specialists — analyse together, benefiting from cross-agent briefing.</span>
                                         </div>
                                     </div>
                                 </div>
@@ -708,10 +1283,62 @@
                         </div>
                     </div>
 
+                    <!-- Memory & Learning -->
+                    <div class="glass-card full-width">
+                        <h3 class="modern-heading">🧠 MEMORY & LEARNING — THE ENGINE GETS SMARTER EVERY RUN</h3>
+                        <p class="muted-text mb-4">Most analysis tools give you a snapshot. This engine builds a relationship with your codebase — remembering what it found, tracking what changed, and evolving its team of specialists to match your project's actual needs.</p>
+
+                        <div class="hiw-mandate-grid">
+                            <div class="hiw-mandate-item">
+                                <div class="hiw-mandate-icon">🔄</div>
+                                <strong>Run-Over-Run Learning</strong>
+                                <p>Each analysis run stores per-agent findings, the synthesis verdict, and any user Q&A answers. On the next run, every agent receives a structured summary of what was found before — they stop repeating known issues and focus on <em>what changed</em>. By the 3rd–5th run, reports are dramatically more focused.</p>
+                            </div>
+                            <div class="hiw-mandate-item">
+                                <div class="hiw-mandate-icon">📋</div>
+                                <strong>Living Documents</strong>
+                                <p>Six document types are generated after every run and <em>incrementally updated</em> — not overwritten. The Risk Register adds new risks and re-scores existing ones. The Lessons Learned accumulates institutional wisdom. The Decision Log timestamps every architecture choice. Think of them as a project's living memory.</p>
+                            </div>
+                            <div class="hiw-mandate-item">
+                                <div class="hiw-mandate-icon">🔬</div>
+                                <strong>Self-Evolving Fleet</strong>
+                                <p>After every synthesis, the engine examines what was <em>not</em> covered well enough. Found a complex event-driven architecture with no CQRS specialist? Heavy ML pipelines with no MLOps expert? It proposes specialist agents — created via two-pass AI generation (Flash drafts, Sonnet reviews) and permanently added to your project's fleet.</p>
+                            </div>
+                            <div class="hiw-mandate-item">
+                                <div class="hiw-mandate-icon">💡</div>
+                                <strong>Confidence-Driven Quality</strong>
+                                <p>Before agents spend expensive tokens on full analysis, they do a cheap self-assessment. Agents that are confident share preliminary findings with uncertain ones — like a senior colleague briefing a new hire before a meeting. You can also answer their questions directly, giving them ground truth instead of guesswork.</p>
+                            </div>
+                        </div>
+
+                        <div class="hiw-mandate-tiers">
+                            <h5>How Memory Flows Through the Pipeline</h5>
+                            <div class="hiw-tier-row">
+                                <div class="hiw-tier-item hiw-tier-trad">
+                                    <span class="hiw-tier-label">Run 1</span>
+                                    <strong>Cold Start</strong>
+                                    <p>No prior knowledge. Agents work from codebase + recon only. Full discovery mode. Living documents created for the first time.</p>
+                                </div>
+                                <div class="hiw-tier-arrow">→</div>
+                                <div class="hiw-tier-item hiw-tier-aug">
+                                    <span class="hiw-tier-label">Run 2–3</span>
+                                    <strong>Building Knowledge</strong>
+                                    <p>Agents see prior findings. Specialists may be spawned. Documents update incrementally. Analysis shifts from "what is this?" to "what changed?"</p>
+                                </div>
+                                <div class="hiw-tier-arrow">→</div>
+                                <div class="hiw-tier-item hiw-tier-native">
+                                    <span class="hiw-tier-label">Run 5+</span>
+                                    <strong>Deep Intelligence</strong>
+                                    <p>Rich episodic memory. Specialist fleet tailored to this project. Living docs are comprehensive. Agents focus on delta analysis and trend detection.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Features -->
                     <div class="glass-card full-width">
-                        <h3 class="modern-heading">✨ BUILT-IN FEATURES</h3>
-                        <p class="muted-text mb-4">Everything is integrated — no manual export steps, no copy-pasting between tools.</p>
+                        <h3 class="modern-heading">✨ BUILT-IN FEATURES — 14 AND COUNTING</h3>
+                        <p class="muted-text mb-4">Everything is integrated — no manual export steps, no copy-pasting between tools. Memory, learning, and agent evolution happen automatically.</p>
                         <div class="hiw-features-grid">
                             <div class="hiw-feature-card">
                                 <div class="hiw-feature-icon">🛤️</div>
@@ -753,20 +1380,54 @@
                                 <h5>Client Context Injection</h5>
                                 <p>Create a client profile in the Admin panel (name, description, constraints). When selected, this context is injected into every agent's prompt — agents tailor recommendations to your client's industry, scale, risk profile, and regulatory environment.</p>
                             </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">🔍</div>
+                                <h5>Reconnaissance Pre-Pass</h5>
+                                <p>A fast Gemini call scans the codebase before any agent launches, producing structured JSON: language, frameworks, databases, auth, CI/CD, complexity, red flags. Every agent receives this baseline — no one wastes tokens rediscovering the tech stack.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">🎯</div>
+                                <h5>Confidence Pre-flight</h5>
+                                <p>Before the full fleet runs, each agent self-assesses confidence on a 15K-char sample. You see who's confident, who's struggling, and what questions they have — then answer, provide URLs, or skip. High-confidence agents automatically brief low-confidence ones.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">🧠</div>
+                                <h5>Episodic Memory</h5>
+                                <p>Cross-run memory tied to projects. Agents know what they found last time, what synthesis concluded, and what lessons were learned. They build on prior knowledge rather than starting from scratch — the 5th run is dramatically deeper than the 1st.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">📚</div>
+                                <h5>Living Documentation</h5>
+                                <p>Six document types — Run Summary, Lessons Learned, Decision Log, Risk Register, Tech Debt Tracker, Agent Notes — are automatically generated after every run and incrementally updated. Browse them in the project's Documents tab.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">🔬</div>
+                                <h5>Dynamic Agent Spawning</h5>
+                                <p>After synthesis, the engine detects coverage gaps and proposes up to 3 specialist agents. Approve with a click — they're created via two-pass generation (Flash drafts, Sonnet reviews) for ~$0.02-0.05 each. They persist per project and join every future run.</p>
+                            </div>
+                            <div class="hiw-feature-card">
+                                <div class="hiw-feature-icon">💰</div>
+                                <h5>Budget-Aware Recommendations</h5>
+                                <p>Set a budget range, timeline, and path preference (Conservative/Balanced/Transformative) on your project. Every agent receives this context and tailors their recommendations accordingly — no more "$2M rebuild" proposals when you have a $50K budget.</p>
+                            </div>
                         </div>
                     </div>
 
                     <!-- SSE Streaming Architecture -->
                     <div class="glass-card full-width">
                         <h3 class="modern-heading">📡 REAL-TIME STREAMING ARCHITECTURE</h3>
-                        <p class="muted-text mb-4">Results stream to your browser the moment each agent completes — you don't wait for all 15 to finish before seeing anything.</p>
+                        <p class="muted-text mb-4">Results stream to your browser the moment each agent completes — you don't wait for all 18 to finish before seeing anything. The SSE stream also carries confidence reports, memory status, and specialist proposals.</p>
                         <div class="hiw-sse-diagram">
                             <div class="hiw-sse-col">
                                 <h5>Backend (FastAPI)</h5>
                                 <div class="hiw-sse-events">
-                                    <div class="hiw-sse-event status-event"><code>status</code> — Fleet lifecycle messages (cloning, launching, complete)</div>
-                                    <div class="hiw-sse-event update-event"><code>agent_update</code> — Per-agent status (Analyzing Source Code... / Rate limited — waiting 15s...)</div>
-                                    <div class="hiw-sse-event result-event"><code>agent_result</code> — Full report payload <code>{persona, name, emoji, status, content}</code></div>
+                                    <div class="hiw-sse-event status-event"><code>status</code> — Fleet lifecycle (cloning, memory_loaded, launching, complete)</div>
+                                    <div class="hiw-sse-event update-event"><code>agent_update</code> — Per-agent status (Analyzing... / Rate limited — waiting 15s...)</div>
+                                    <div class="hiw-sse-event result-event"><code>agent_result</code> — Full report <code>{persona, name, emoji, status, content}</code></div>
+                                    <div class="hiw-sse-event confidence-event"><code>confidence_report</code> — Pre-flight confidence levels for all agents</div>
+                                    <div class="hiw-sse-event confidence-event"><code>awaiting_answers</code> — Fleet paused, waiting for user Q&A answers</div>
+                                    <div class="hiw-sse-event specialist-event"><code>specialist_proposals</code> — Post-synthesis specialist agent proposals</div>
+                                    <div class="hiw-sse-event status-event"><code>usage_summary</code> — Token counts, costs, model breakdown</div>
                                     <div class="hiw-sse-event error-event"><code>error</code> — Structured error with message</div>
                                 </div>
                             </div>
@@ -776,12 +1437,16 @@
                                 <div class="hiw-sse-events">
                                     <div class="hiw-sse-event status-event">Progress bar + fleet status message updated</div>
                                     <div class="hiw-sse-event update-event">Per-agent card spinner and sub-status text updated live</div>
-                                    <div class="hiw-sse-event result-event">Report card rendered with persona-specific renderer (Jira board, Mermaid diagram, or markdown)</div>
+                                    <div class="hiw-sse-event result-event">Report card rendered with persona-specific renderer</div>
+                                    <div class="hiw-sse-event confidence-event">Confidence panel shows agent cards sorted low→high with Q&A form</div>
+                                    <div class="hiw-sse-event confidence-event">Fleet pauses — user answers questions or skips to proceed</div>
+                                    <div class="hiw-sse-event specialist-event">Proposal cards with checkboxes — approve or dismiss</div>
+                                    <div class="hiw-sse-event status-event">Cost breakdown card rendered below synthesis</div>
                                     <div class="hiw-sse-event error-event">Error displayed inline, fleet continues for other agents</div>
                                 </div>
                             </div>
                         </div>
-                        <p class="muted-text" style="margin-top:20px;font-size:0.85rem;">The SSE connection uses <code>sse-starlette</code> on the backend and the browser's native <code>EventSource</code> API on the frontend. No WebSocket handshake overhead, no polling. The connection closes automatically when the synthesis result is yielded.</p>
+                        <p class="muted-text" style="margin-top:20px;font-size:0.85rem;">The SSE connection uses <code>sse-starlette</code> on the backend and the browser's native <code>EventSource</code> API on the frontend. No WebSocket handshake overhead, no polling. The fleet session mechanism uses <code>asyncio.Event</code> to pause the SSE generator during confidence Q&A — the connection stays alive while waiting for user input, then resumes when answers arrive or the user skips.</p>
                     </div>
 
                     <!-- Tech Stack -->
@@ -824,6 +1489,9 @@
                                     <span class="hiw-tech-tag">PostgreSQL</span>
                                     <span class="hiw-tech-tag">JSONB (report storage)</span>
                                     <span class="hiw-tech-tag">supabase-py</span>
+                                    <span class="hiw-tech-tag">Episodic Memory (project_artifacts)</span>
+                                    <span class="hiw-tech-tag">Living Documents (6 types)</span>
+                                    <span class="hiw-tech-tag">Custom Agent Persistence</span>
                                 </div>
                             </div>
                             <div class="hiw-tech-section">
@@ -936,6 +1604,20 @@
 
             </div>
         </main>
+    </div>
+
+    <!-- Kickoff Pack file preview overlay -->
+    <div id="kickoff-file-preview-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+        <div class="modal glass-card material-preview-modal">
+            <div class="modal-header">
+                <h3 id="kickoff-file-preview-title">Document preview</h3>
+                <button class="modal-close" id="kickoff-file-preview-close" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="kickoff-file-preview-meta" class="material-preview-meta"></div>
+                <div id="kickoff-file-preview-body" class="kickoff-file-preview-body">Loading...</div>
+            </div>
+        </div>
     </div>
 
     <!-- Q&A Chat Modal -->

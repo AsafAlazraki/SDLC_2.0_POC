@@ -108,11 +108,28 @@ CREATE TABLE reports (
 | POST | `/api/personas` | Create a custom DB persona `{role_name, system_prompt}` |
 | GET | `/api/personas/config` | Return full PERSONA_CONFIGS (for modal display) |
 | POST | `/api/analyze-repo` | Main analysis: SSE stream of agent results |
+| POST | `/api/analyze-topic` | Topic-mode analysis: SSE stream (topic + URLs + optional repo) |
 | POST | `/api/analyze` | Legacy text/file analysis (non-streaming) |
 | POST | `/api/chat` | Q&A with individual agent `{persona_key, question, agent_report}` |
 | POST | `/api/create-github-issues` | Export BA backlog to GitHub Issues `{github_url, stories:[]}` |
 | GET | `/api/reports` | List past analysis runs |
 | GET | `/api/reports/{id}` | Get a specific saved report |
+| POST | `/api/fleet-answer/{session_id}` | Phase 6: Submit user answers during confidence Q&A pause |
+| POST | `/api/fleet-skip/{session_id}` | Phase 6: Skip Q&A and proceed with fleet |
+| POST | `/api/approve-specialists-v2` | Phase 7B: Create approved specialist agents `{proposals, approved_keys, project_id}` |
+| GET | `/api/projects/{id}/documents` | Phase 7A: List all living documents for a project |
+| GET | `/api/projects/{id}/documents/{doc_kind}` | Phase 7A: Get a specific living document |
+| GET | `/api/projects/{id}/memory` | Phase 7A: Debug endpoint — episodic memory summary |
+| GET | `/api/projects/{id}/custom-agents` | Phase 7B: List spawned specialist agents |
+| GET | `/api/borrowable-agents` | Phase 7B: List all custom agents across projects (for borrowing) |
+| GET | `/api/projects/{id}/runs` | List runs for a project |
+| GET | `/api/projects/{id}/artifacts` | List artifacts for a project |
+| POST | `/api/projects/{id}/artifacts` | Create an artifact |
+| GET | `/api/projects/{id}/backlog` | Phase 4: List backlog items |
+| POST | `/api/projects/{id}/backlog` | Phase 4: Create a backlog item |
+| PATCH | `/api/projects/{id}/backlog/{item_id}` | Phase 4: Update a backlog item |
+| DELETE | `/api/projects/{id}/backlog/{item_id}` | Phase 4: Delete a backlog item |
+| POST | `/api/projects/{id}/backlog/import-from-ba` | Phase 4: Auto-import BA stories |
 
 ---
 
@@ -258,16 +275,24 @@ Injected at runtime into every agent's prompt in `run_single_agent`:
 
 ### Streaming Architecture
 
-The `/api/analyze-repo` endpoint returns `EventSourceResponse` (SSE). Events:
-- `status` — fleet lifecycle (cloning, launched, complete)
+The `/api/analyze-repo` and `/api/analyze-topic` endpoints return `EventSourceResponse` (SSE). Events:
+- `status` — fleet lifecycle phases: `cloning`, `cloned`, `memory_loaded`, `custom_agents_loaded`, `confidence_check`, `agents_launched`, `agents_launching`, `documenting`, `documented`, `complete`
 - `agent_update` — per-agent status changes; key `"recon"` = recon phase; key `"synthesis"` = synthesis phase
-- `agent_result` — completed agent report `{persona, name, emoji, status, content}`
+- `agent_result` — completed agent report `{persona, name, emoji, status, content, usage}`
+- `confidence_report` — Phase 6: all agents' self-assessments `{probes, has_questions, questions, fleet_session_id}`
+- `awaiting_answers` — Phase 6: fleet paused, waiting for user input `{session_id, questions, message, fleet_session_id}`
+- `specialist_proposals` — Phase 7B: proposed specialist agents `{proposals[], message}`
+- `usage_summary` — Phase 5: aggregated token counts + cost `{total_input_tokens, total_output_tokens, total_cost_usd}`
 - `error` — error event
 
 The frontend `handleSSEEvent()` in `script.js`:
 - `recon` key agent_updates → shown in the fleet status bar (no card for recon)
 - All other agent_updates → update the per-agent status card spinner + sub-status
 - `agent_result` → calls `renderAgentResult()` with persona-specific renderer
+- `confidence_report` → calls `renderConfidenceReport()` — shows agent cards sorted by urgency
+- `awaiting_answers` → calls `showConfidenceQA()` — shows Q&A form with submit/skip
+- `specialist_proposals` → calls `renderSpecialistProposals()` — shows proposal cards with approve/dismiss
+- `usage_summary` → shows cost in fleet status bar
 
 ---
 
@@ -285,13 +310,17 @@ Single HTML page (`index.html`) with vanilla JS (`script.js`, loaded as ES modul
 
 ### How It Works Page
 
-The page is a comprehensive technical document with 6 sections:
-1. **Hero** — stat row (19 agents, 2 models, 18 domains)
-2. **Pipeline** — all 5 phases (Phase 0 recon → ingestion → filtering → parallel fleet → synthesis), with full technical detail on each
-3. **The Fleet** — Interactive avatar gallery (6 grouped categories) with clickable agent cards. Each card shows the SVG avatar, name, model badge, context limit, and brief description. Clicking opens a detail modal with the agent's full identity, mission, investigation checklist, deliverables, and research mandate (parsed from `system_prompt`). The previous text-based listing is preserved under a collapsible "Full Agent Reference" `<details>` element.
-4. **Built-in Features** — Q&A Chat, GitHub Issues, Mermaid diagrams, Jira backlog, history, client context
-5. **SSE Architecture** — event type diagram, frontend handler behaviour
-6. **Full Tech Stack** — all libraries grouped by layer
+The page is a comprehensive technical document with 10 sections:
+1. **Hero** — stat row (19+ agents, 2 models, 18 domains, 3 paths, 6 living docs, ∞ cross-run memory)
+2. **Pipeline** — all 8 phases (Phase 0 recon → ingestion → episodic memory loading → filtering → confidence pre-flight → parallel fleet → synthesis → living documentation generation → dynamic agent spawning), with full technical detail on each
+3. **Forward-Thinking Mandate** — AI Coding Tools, Low-Code Platforms, AI Automation, AI-Native Infrastructure, plus 3-tier recommendation system (Traditional / AI-Augmented / AI-Native)
+4. **The Fleet** — Interactive avatar gallery (6 grouped categories) with clickable agent cards. Each card shows the SVG avatar, name, model badge, context limit, and brief description. Clicking opens a detail modal with the agent's full identity, mission, investigation checklist, deliverables, and research mandate (parsed from `system_prompt`). The previous text-based listing is preserved under a collapsible "Full Agent Reference" `<details>` element.
+5. **Unscripted Debate** — Debate rules, 4 conflict arcs (Speed vs Safety, Build vs Buy vs AI vs Low-Code, Investment appetite, Unexpected alliance), synthesis closes the debate
+6. **Memory & Learning** — Run-over-run learning, living documents, self-evolving fleet, confidence-driven quality. Includes "How Memory Flows" visualization (Cold Start → Building Knowledge → Deep Intelligence)
+7. **Built-in Features** — 14 feature cards: Three Strategic Paths, Expert Debate, Q&A Chat, GitHub Issues, Architecture Diagrams, Jira Backlog, History, Client Context, Recon Pre-Pass, Confidence Pre-flight, Episodic Memory, Living Documentation, Dynamic Agent Spawning, Budget-Aware Recommendations
+8. **SSE Streaming Architecture** — event type diagram with 8 event types (status, agent_update, agent_result, confidence_report, awaiting_answers, specialist_proposals, usage_summary, error), frontend handler behaviour for each
+9. **Full Tech Stack** — all libraries grouped by layer, including new persistence (Episodic Memory, Living Documents, Custom Agent Persistence)
+10. Agent Detail Modal (interactive overlay accessed from fleet gallery)
 
 New CSS classes use `hiw-*` prefix (gallery: `hiw-avatar-gallery`, `hiw-avatar-card`, `hiw-gallery-group`). Agent detail modal uses `agent-detail-*` prefix. All defined in `styles.css`.
 
@@ -328,7 +357,7 @@ const state = {
 
 ---
 
-## Eight Major Features (All Implemented)
+## Fourteen Major Features (All Implemented)
 
 ### 1. Synthesis Agent — "The Verdict" (Extended Thinking enabled)
 - 19th agent, runs after all 18 parallel agents complete
@@ -376,6 +405,60 @@ const state = {
 - Gallery is grouped into 6 categories: Core Engineering, Quality & Security, Business & Product, Operations & Governance, Innovation & Platform, The Verdict
 - The full text-based agent reference is preserved under a collapsible `<details>` element
 
+### 9. Interactive Backlog (Phase 4)
+- BA agent's structured stories auto-import into a Kanban board on analysis completion
+- 4-column board: Backlog → To Do → In Progress → Done
+- HTML5 drag-and-drop between columns with optimistic UI updates + server rollback on failure
+- Full CRUD: create, edit (modal with title/story/AC/points/priority/epic), delete stories
+- Priority colour coding (high=red, med=amber, low=green) with story point badges
+- `renderBacklogTab()` pipeline: `renderBacklog()` → `renderBacklogColumn()` → `renderBacklogItem()`
+- Server-side: `database.py` has `create_backlog_item()`, `update_backlog_item()`, `import_backlog_from_ba()` using `project_artifacts` table with `kind='backlog_item'`
+
+### 10. Prompt Caching & Cost Accounting (Phase 5)
+- **Anthropic prompt caching**: System messages restructured as list of content blocks with `cache_control: {"type": "ephemeral"}` on shared prefix (recon + materials + research mandate). Agents 2-7 in sequence get ~90% cache hits.
+- **Usage extraction**: `_extract_anthropic_usage(message)` and `_extract_gemini_usage(response)` pull token counts from API responses. `aggregate_usage()` combines across all agents.
+- **Cost computation**: Per-million-token pricing model (`COST_PER_MTOK` dict) calculates `total_cost_usd` from input/output/cache tokens.
+- **DB persistence**: `usage_summary` stored on `project_runs` table; `token_cost_cents` derived and stored.
+- **Live display**: `usage_summary` SSE event → fleet status bar shows cost; project detail view shows cumulative cost chip.
+- **Frugal mode**: Checkbox toggle skips OutSystems agents (`skip_personas: ['outsystems_architect', 'outsystems_migration']`), saving ~20% Gemini tokens. Progress bar adjusts dynamically (17 vs 19 total).
+
+### 11. Agent Confidence Pre-flight Check (Phase 6)
+- **Confidence probe**: Before the main fleet runs, `run_confidence_probe()` sends each agent a fast, cheap structured-JSON self-assessment using 15K chars of context. Returns `{confidence: high|medium|low, gaps, questions_for_user, research_needed, consult_agents, preliminary_findings}`.
+- **Cross-agent briefing**: `build_cross_agent_briefing()` compiles HIGH-confidence agents' preliminary findings into a shared prompt block injected into LOW/MEDIUM agents' prompts.
+- **User Q&A pause**: If agents have questions, the fleet yields an `awaiting_answers` SSE event and pauses (up to 5 minutes) via `asyncio.Event`. The frontend shows a Q&A panel with per-agent questions, answer inputs, URL textarea, and global answer field.
+- **Fleet session mechanism**: `_fleet_sessions` dict in `main.py` maps `session_id → {event, answers}`. `POST /api/fleet-answer/{id}` receives answers + fetches extra URLs (capped at 5, 20K chars each). `POST /api/fleet-skip/{id}` proceeds immediately.
+- **Frontend**: Confidence cards sorted by urgency (low first), colour-coded badges (green/amber/red), Q&A form with submit/skip buttons. Panel resets between runs.
+
+### 12. Episodic Memory & Living Documentation (Phase 7A)
+- **Episodic memory**: `database.get_episodic_memory(project_id)` retrieves previous runs, per-agent findings (truncated to 2K chars), synthesis history (last 3 runs), and all living documents. `format_episodic_memory()` renders into a structured prompt block injected into every agent.
+- **Memory scope**: Tied to **projects** — everything analysed under one project shares memory, even across multiple repos.
+- **Living documents**: 6 document types generated/updated after every run by Gemini Flash (free tier):
+  - **Run Summary** — per-run snapshot (not living)
+  - **Lessons Learned** — cumulative, grouped by theme
+  - **Decision Log** — architectural decisions with trade-offs and status
+  - **Risk Register** — risks with severity/likelihood/status tracking (new → acknowledged → mitigating → mitigated → closed)
+  - **Technical Debt Inventory** — itemised debt with category/severity/effort/status
+  - **Agent Knowledge Notes** — per-agent learnings about this specific codebase
+- **Incremental updates**: Each run reads existing docs, produces updates via `generate_post_run_documents()`, merges into master docs via `upsert_project_document()`. Documents compound over time.
+- **Storage**: Uses existing `project_artifacts` table with `kind='doc_*'` values. Living docs have one active row per project; run summaries create new rows.
+- **Frontend**: "📋 Documents" tab in project detail view. Collapsible cards with colour-coded borders, markdown rendering, refresh button.
+- **Budget/timeline injection**: Optional `budget_range`, `timeline`, `path_preference` fields in project metadata. When set, injected into client context so agents tailor PATH A/B/C recommendations to constraints.
+
+### 13. Dynamic Agent Spawning (Phase 7B)
+- **Gap analysis**: After synthesis, `analyse_for_specialists()` reviews confidence probes + agent reports to identify knowledge gaps. Proposes up to 3 specialist agents via `specialist_proposals` SSE event.
+- **System proposes, user approves (Option D)**: Frontend shows specialist proposal cards with checkboxes, emoji, name, reason, and investigation areas. User selects which to create.
+- **Two-pass persona creation**: Gemini Flash drafts the specialist's system prompt (free tier), then Sonnet reviews and refines it (~$0.02-0.05). `create_specialist_persona()` handles both passes.
+- **Persistent project agents**: Created specialists are stored as `project_artifacts` with `kind='custom_agent'`. They persist across runs and are automatically loaded into the fleet on future runs.
+- **Borrowable across projects**: `GET /api/borrowable-agents` lists all custom agents across projects. A project can see and borrow specialists created for other projects.
+- **Fleet merging**: `run_agent_fleet()` accepts `custom_agents` parameter. Custom agents are merged into `PERSONA_CONFIGS` at runtime with their own context limits. They run alongside the core fleet.
+- **Re-run model (Option B)**: Current run completes normally. If specialists are created, user re-runs with the expanded fleet — all agents benefit from the specialist's presence.
+
+### 14. Budget-Aware Recommendations (Phase 7A)
+- Projects can have optional `budget_range`, `timeline`, `path_preference` metadata fields
+- When present, injected into client context: "Budget range: $75K-$250K, Timeline: 12 months"
+- Agents told to "tailor all recommendations to fit these constraints" and "flag anything that exceeds them"
+- PATH A/B/C recommendations become budget-scoped rather than generic
+
 ---
 
 ## Running Locally
@@ -406,6 +489,52 @@ open http://localhost:8000
 
 ---
 
+## Memory Architecture (6-Layer Model)
+
+The system implements a layered memory architecture inspired by the v2 Architecture Proposal. Not all layers are fully built — the status column shows what's live vs decided vs deferred.
+
+| Layer | Name | Status | Description |
+|---|---|---|---|
+| **0** | Institutional Memory | **Partial** | Project materials (uploaded files/URLs) injected as raw text. pgvector/semantic search deferred until volume demands it. |
+| **1** | Episodic Memory | **✅ Live** | `get_episodic_memory()` retrieves previous runs, per-agent findings, synthesis history, and living docs. Injected into every agent's prompt via `format_episodic_memory()`. |
+| **2** | Project Context | **✅ Live** | Business context form, budget/timeline fields, client metadata. All injected into agent prompts. |
+| **3** | Role Identity | **✅ Live** | 18 hardcoded personas + dynamically spawned specialists (Phase 7B). Persona Designer available in admin UI. |
+| **4** | Working Memory | **✅ Live** | GitHub API ingestion, recon pre-pass, persona-aware context filtering. Unchanged. |
+| **5** | Autonomous Research | **Deferred** | Run-time research via Gemini search grounding covers this for now. Scheduled research (daily/weekly/monthly) deferred. |
+
+### Run Pipeline (Full Sequence)
+
+1. **Episodic memory load** — previous findings, living docs, synthesis history retrieved from DB
+2. **Custom agents load** — project-level specialist agents merged into fleet
+3. **Repository/topic ingestion** — GitHub API clone or URL fetch
+4. **Recon pre-pass** — fast Gemini call produces structured JSON baseline
+5. **Project materials render** — uploaded files/URLs assembled into prompt block
+6. **Budget/timeline injection** — optional engagement parameters added to client context
+7. **Confidence probes** — fast self-assessment per agent (15K char sample)
+8. **Cross-agent briefing** — high-confidence agents' findings shared with struggling agents
+9. **User Q&A** (optional) — if agents have questions, fleet pauses for user input
+10. **Parallel fleet launch** — 18 core + N custom agents run simultaneously
+11. **Synthesis** — Claude Sonnet 4.6 (or Opus if escalated) reads all reports
+12. **Specialist gap analysis** — system proposes new specialist agents if gaps detected
+13. **Post-run documentation** — Gemini Flash (free tier) generates/updates 6 living documents
+14. **Artifact persistence** — reports, synthesis, backlog items saved to Supabase
+
+### Key Architecture Decisions (from Q&A session)
+
+| Decision | Rationale |
+|---|---|
+| Memory tied to projects, not repos | A project can span multiple repos; all runs share one memory |
+| Incremental doc updates, not fresh per run | Documents compound knowledge — risk registers track status across runs |
+| Gemini Flash free tier for housekeeping | Doc generation, persona drafting, research summarisation — $0 cost |
+| Sonnet reviews specialist personas | Quality gate: Flash drafts cheaply, Sonnet refines (two-pass) |
+| Option B for specialist timing | Run completes, then specialists created and re-run offered (cleaner, all agents benefit) |
+| Option D for spawn approval | System proposes, user approves — no autonomous agent creation |
+| Brute-force materials over semantic search | Works up to ~20 docs; pgvector triggered when volume exceeds threshold |
+| No scheduled research yet | Run-time Gemini search grounding sufficient; revisit when project volume grows |
+| Situational Opus escalation | Not a permanent upgrade — escalate when confidence is low or contradictions are heavy |
+
+---
+
 ## Recommended Future Integrations
 
 ### MCP Servers (High Value)
@@ -432,14 +561,21 @@ open http://localhost:8000
 
 ### Architecture Improvements (Backlog)
 
-| Item | Priority |
-|---|---|
-| Report diffing | Show delta between two runs of the same repo — what improved, what regressed |
-| Chunked context strategy | For repos >1M chars, send multiple chunks and merge agent outputs |
-| Persistent agent memory | Store past findings per repo in Supabase; prime agents with "last time we found X" |
-| Webhook delivery | POST synthesis result to a configurable URL when analysis completes |
-| Multi-repo comparison | Analyse two repos simultaneously and produce a comparison report |
-| Structured logging | Replace silent try/catch in `database.py` with structured log events |
+| Item | Priority | Status |
+|---|---|---|
+| ~~Persistent agent memory~~ | ~~High~~ | ✅ **Done** (Phase 7A — episodic memory + living docs) |
+| ~~Report diffing~~ | ~~High~~ | ✅ **Partially done** — agents now receive previous findings and track deltas in risk register/tech debt docs |
+| Inter-agent communication mid-run | High | **Decided** — agents can flag critical findings to each other mid-run when the latency cost is worth it. Not yet implemented. |
+| Tier 2 artefact generation | High | **Decided** — conversational "build that" command generating code/config/docs into local project folders. Not yet implemented. |
+| Omnivorous input pipeline | Medium | **Decided** — PDFs, images (vision), spreadsheets, video/audio transcripts, zips, .osp files, code folders. Partial support exists; full pipeline not yet built. |
+| Situational Opus escalation | Medium | **Decided** — escalate synthesis to Opus 4.6 + full codebase when confidence scores are low or agents heavily contradict. Not yet implemented. |
+| Scheduled domain research (Layer 5) | Medium | **Deferred** — run-time research via Gemini search grounding sufficient for now. Revisit when project volume grows. |
+| Semantic search (pgvector) | Low | **Deferred** — brute-force materials injection works well up to ~20 docs. Trigger: when Layer 5 research or materials exceed 50 entries per domain. |
+| Chunked context strategy | Medium | For repos >1M chars, send multiple chunks and merge agent outputs |
+| Webhook delivery | Low | POST synthesis result to a configurable URL when analysis completes |
+| Multi-repo comparison | Low | Analyse two repos simultaneously and produce a comparison report |
+| Structured logging | Low | Replace silent try/catch in `database.py` with structured log events |
+| How It Works page overhaul | High | **Decided** — needs major update to explain new features (confidence, memory, spawning, docs) |
 
 ---
 
@@ -448,9 +584,13 @@ open http://localhost:8000
 - **Private repos**: GitHub ingestion uses public API only — no auth token passed in `clone_github_repo()`
 - **Token limits**: Large repos are handled by persona filtering, but very large repos may still hit limits for `tech_lead` (no filtering)
 - **Supabase error handling**: DB functions use try/catch but errors are silent — add structured logging
-- **Report diffing**: History shows past runs but doesn't diff between runs for the same repo
 - **File upload analysis**: The legacy `/api/analyze` route exists but the new fleet personas are not wired to it
 - **Recon on very small repos**: The 80K char sample may be the entire repo — that's fine, it still works
+- **Custom agent borrowing**: Agents can be listed across projects but aren't yet auto-recommended when a new project has similar gaps
+- **Budget/timeline fields**: Stored in project `metadata` JSONB — not separate DB columns. Works but means no direct SQL filtering by budget range
+- **Post-run doc generation**: Uses Gemini Flash free tier — subject to rate limits under heavy load (15 RPM). Falls back gracefully (non-fatal)
+- **Specialist persona quality**: Two-pass creation (Flash draft → Sonnet review) is good but not manually curated. May need human refinement for highly specialised domains
+- **Inter-agent mid-run communication**: Architecture decided but not yet implemented. Agents still run fully in parallel with synthesis handling cross-cutting concerns
 
 ---
 

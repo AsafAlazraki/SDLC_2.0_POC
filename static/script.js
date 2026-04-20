@@ -14,6 +14,9 @@ document.addEventListener('DOMContentLoaded', () => {
         currentChatPersona: null // Which agent the chat modal is open for
     };
 
+    /** Phase 6 — fleet session id for confidence Q&A */
+    let _fleetSessionId = null;
+
     // ─────────────────────────────────────────
     // API Configuration & Status
     // ─────────────────────────────────────────
@@ -201,6 +204,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const additionalContext = collectBusinessContext();
 
+        // Phase 5 — frugal mode: skip OutSystems agents if toggled.
+        const frugalToggle = document.getElementById('frugal-mode-toggle');
+        const skipPersonas = (frugalToggle && frugalToggle.checked)
+            ? ['outsystems_architect', 'outsystems_migration']
+            : null;
+
         try {
             const response = await fetch('/api/analyze-repo', {
                 method: 'POST',
@@ -209,7 +218,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     github_url: githubUrl,
                     gemini_api_key: state.geminiKey,
                     client_id: state.activeClient || null,
-                    additional_context: additionalContext || null
+                    project_id: state.selectedProjectId || null,
+                    additional_context: additionalContext || null,
+                    skip_personas: skipPersonas,
                 })
             });
 
@@ -243,6 +254,128 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // ─────────────────────────────────────────
+    // Mode Switcher (Repository ↔ Topic)
+    // ─────────────────────────────────────────
+    const modeTabs = document.querySelectorAll('.mode-tab');
+    const modePanels = document.querySelectorAll('.mode-panel');
+    modeTabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            const mode = tab.dataset.mode;
+            modeTabs.forEach(t => {
+                const isActive = t.dataset.mode === mode;
+                t.classList.toggle('active', isActive);
+                t.setAttribute('aria-selected', isActive ? 'true' : 'false');
+            });
+            modePanels.forEach(p => {
+                p.classList.toggle('hidden', p.dataset.mode !== mode);
+            });
+        });
+    });
+
+    // ─────────────────────────────────────────
+    // Topic Mode Fleet Launch
+    // ─────────────────────────────────────────
+    const analyzeTopicBtn = document.getElementById('analyze-topic-btn');
+    const topicLoader = document.getElementById('topic-loader');
+
+    async function streamFleetRun(url, body, button, loader) {
+        if (button) button.disabled = true;
+        if (loader) loader.style.display = 'inline-block';
+
+        resetReport();
+        document.querySelector('[data-target="report"]').click();
+
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            if (!response.ok && response.headers.get('content-type')?.includes('application/json')) {
+                const err = await response.json();
+                handleSSEEvent('error', JSON.stringify({ message: err.detail || 'Request failed' }));
+                return;
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n');
+
+                let eventType = null;
+                for (const line of lines) {
+                    if (line.startsWith('event: ')) {
+                        eventType = line.substring(7).trim();
+                    } else if (line.startsWith('data: ')) {
+                        const eventData = line.substring(6).trim();
+                        handleSSEEvent(eventType, eventData);
+                        eventType = null;
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('Discovery error', e);
+            handleSSEEvent('error', JSON.stringify({ message: String(e) }));
+        } finally {
+            if (button) button.disabled = false;
+            if (loader) loader.style.display = 'none';
+        }
+    }
+
+    analyzeTopicBtn?.addEventListener('click', async () => {
+        const topic = document.getElementById('topic-input')?.value.trim();
+        const urlsRaw = document.getElementById('topic-urls')?.value || '';
+        const repoUrl = document.getElementById('topic-repo')?.value.trim();
+
+        const urls = urlsRaw
+            .split(/\r?\n/)
+            .map(u => u.trim())
+            .filter(Boolean);
+
+        if (!topic) {
+            alert('Please describe the topic you want investigated.');
+            return;
+        }
+        if (urls.length === 0 && !repoUrl) {
+            alert('Please provide at least one source URL, or a reference repository.');
+            return;
+        }
+
+        const additionalContext = collectBusinessContext();
+
+        // Capture topic so the build-pack compiler can re-use it after synthesis.
+        state.currentTopic = topic;
+        state.currentBusinessContext = additionalContext || '';
+
+        const frugalToggle = document.getElementById('frugal-mode-toggle');
+        const skipPersonas = (frugalToggle && frugalToggle.checked)
+            ? ['outsystems_architect', 'outsystems_migration']
+            : null;
+
+        await streamFleetRun(
+            '/api/analyze-topic',
+            {
+                topic,
+                urls,
+                github_url: repoUrl || null,
+                gemini_api_key: state.geminiKey,
+                client_id: state.activeClient || null,
+                project_id: state.selectedProjectId || null,
+                additional_context: additionalContext || null,
+                skip_personas: skipPersonas,
+            },
+            analyzeTopicBtn,
+            topicLoader,
+        );
+    });
+
     function handleSSEEvent(eventType, eventData) {
         try {
             const data = JSON.parse(eventData);
@@ -273,13 +406,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (eventType === 'agent_result') {
                 renderAgentResult(data);
-                const total = 19; // 15 personas + AI Innovation Scout + 2 OutSystems + 1 synthesis
+                // Dynamic total: 19 when full fleet, 17 in frugal mode (skip 2 OS agents).
+                const frugal = document.getElementById('frugal-mode-toggle');
+                const total = (frugal && frugal.checked) ? 17 : 19;
                 const doneCount = document.querySelectorAll('.agent-status-card.done').length;
                 const progress = (doneCount / total) * 100;
                 const progressFill = document.getElementById('fleet-progress-fill');
                 if (progressFill) progressFill.style.width = `${progress}%`;
                 // Synthesis result = everything is done regardless of card state
-                if (data.persona === 'synthesis') revealMeetingRoom();
+                if (data.persona === 'synthesis') {
+                    revealMeetingRoom();
+                    revealBuildPackBanner();
+                }
             }
 
             if (eventType === 'agent_update') {
@@ -290,6 +428,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             ? `🔍 Reconnaissance complete — launching ${Object.keys(state.personaConfigs).length} agents...`
                             : `🔍 ${data.sub_status || 'Running codebase reconnaissance...'}`
                     );
+                    // Capture recon JSON for downstream tools (build pack compiler, etc.)
+                    if (data.recon) state.reconData = data.recon;
                 }
                 const agentCard = document.getElementById(`status-${data.key}`);
                 if (agentCard) {
@@ -312,6 +452,36 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (eventType === 'error') {
                 updateFleetStatusMessage(`Error: ${data.message}`);
+            }
+
+            // Phase 6 — confidence check events
+            if (eventType === 'confidence_report') {
+                renderConfidenceReport(data);
+            }
+            if (eventType === 'awaiting_answers') {
+                showConfidenceQA(data);
+            }
+
+            // Phase 7B — specialist agent proposals
+            if (eventType === 'specialist_proposals') {
+                renderSpecialistProposals(data);
+            }
+
+            // Phase 5 — live cost display when a run finishes.
+            if (eventType === 'usage_summary') {
+                state.lastUsageSummary = data;
+                const costUsd = data.total_cost_usd || 0;
+                if (costUsd > 0) {
+                    const costMsg = `Run cost: $${costUsd.toFixed(4)} (` +
+                        `${(data.total_input_tokens || 0).toLocaleString()} in / ` +
+                        `${(data.total_output_tokens || 0).toLocaleString()} out` +
+                        (data.total_cache_read_tokens > 0
+                            ? ` / ${data.total_cache_read_tokens.toLocaleString()} cache hits`
+                            : '') +
+                        ')';
+                    console.log('[usage]', costMsg, data);
+                    updateFleetStatusMessage(costMsg);
+                }
             }
         } catch(e) { console.error("SSE parse error", e); }
     }
@@ -653,9 +823,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (agentStatusGrid) agentStatusGrid.innerHTML = '';
         const mermaidWrapper = document.getElementById('mermaid-wrapper');
         if (mermaidWrapper) mermaidWrapper.style.display = 'none';
+        // Reset confidence panel from previous run
+        const confPanel = document.getElementById('confidence-panel');
+        if (confPanel) confPanel.classList.add('hidden');
+        const confQA = document.getElementById('confidence-qa');
+        if (confQA) confQA.classList.add('hidden');
+        _fleetSessionId = null;
         updateFleetStatusMessage('');
         state.reportContents = {};
         state.lastAnalyzedUrl = null;
+        state.reconData = null;
+        state.currentTopic = '';
+        resetBuildPackBanner();
     }
 
     // ─────────────────────────────────────────
@@ -863,7 +1042,16 @@ document.addEventListener('DOMContentLoaded', () => {
             // Re-render synthesis if saved
             if (report.synthesis_content) {
                 renderAgentResult({ persona: 'synthesis', name: 'The Verdict', emoji: '🎯', status: 'success', content: report.synthesis_content });
+                revealBuildPackBanner();
             }
+
+            // If this is a topic-mode run, recover the topic from the storage id
+            if (typeof report.github_url === 'string' && report.github_url.startsWith('topic://')) {
+                state.currentTopic = report.github_url.replace(/^topic:\/\//, '').trim();
+            } else {
+                state.currentTopic = '';
+            }
+            state.lastAnalyzedUrl = report.github_url;
 
             const statusText = document.getElementById('discovery-status-text');
             if (statusText) statusText.innerText = `Loaded from history · ${report.github_url}`;
@@ -904,8 +1092,133 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // ─────────────────────────────────────────
-    // Team Kickoff Pack Generator
+    // Team Kickoff Pack Generator (SSE-streamed multi-doc)
     // ─────────────────────────────────────────
+    const KICKOFF_PACK_STAGES = [
+        'analyzing',
+        'compiling_spec',
+        'generating_files',
+        'zipping',
+        'complete',
+    ];
+
+    function setKickoffStage(stage) {
+        const idx = KICKOFF_PACK_STAGES.indexOf(stage);
+        if (idx < 0) return;
+        document.querySelectorAll('.kickoff-pack-progress__stage').forEach(elNode => {
+            const elIdx = KICKOFF_PACK_STAGES.indexOf(elNode.dataset.stage);
+            elNode.classList.remove('active', 'done');
+            if (elIdx < idx) elNode.classList.add('done');
+            else if (elIdx === idx) elNode.classList.add('active');
+        });
+    }
+
+    function setKickoffStatus(message, kind = '') {
+        const status = document.getElementById('kickoff-pack-status');
+        if (!status) return;
+        status.textContent = message || '';
+        status.className = 'kickoff-pack-status' + (kind ? ' ' + kind : '');
+    }
+
+    function resetKickoffPanel() {
+        const card = document.getElementById('report-kickoff');
+        const progress = document.getElementById('kickoff-pack-progress');
+        const link = document.getElementById('kickoff-pack-download-link');
+        const fileList = document.getElementById('kickoff-pack-files');
+
+        if (card) {
+            card.style.display = 'block';
+            card.classList.add('fade-in');
+        }
+        if (progress) {
+            progress.classList.remove('hidden');
+            progress.querySelectorAll('.kickoff-pack-progress__stage').forEach(elNode => {
+                elNode.classList.remove('active', 'done');
+            });
+        }
+        if (link) {
+            link.classList.add('hidden');
+            link.removeAttribute('href');
+        }
+        if (fileList) {
+            while (fileList.firstChild) fileList.removeChild(fileList.firstChild);
+        }
+        setKickoffStatus('');
+    }
+
+    function fmtKickoffBytes(bytes) {
+        if (!bytes && bytes !== 0) return '';
+        const units = ['B', 'KB', 'MB'];
+        let i = 0, n = bytes;
+        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+        return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+    }
+
+    function appendKickoffFile(fileMeta) {
+        const list = document.getElementById('kickoff-pack-files');
+        if (!list) return;
+        const li = document.createElement('li');
+        li.className = 'kickoff-pack-file';
+        li.dataset.previewUrl = fileMeta.preview_url || '';
+        li.dataset.filename = fileMeta.filename || '';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'kickoff-pack-file__name';
+        nameSpan.textContent = fileMeta.filename || '';
+
+        const sizeSpan = document.createElement('span');
+        sizeSpan.className = 'kickoff-pack-file__size';
+        sizeSpan.textContent = fmtKickoffBytes(fileMeta.size || 0);
+
+        li.appendChild(nameSpan);
+        li.appendChild(sizeSpan);
+        li.addEventListener('click', () => openKickoffFilePreview(fileMeta));
+        list.appendChild(li);
+    }
+
+    async function openKickoffFilePreview(fileMeta) {
+        const overlay = document.getElementById('kickoff-file-preview-overlay');
+        const title = document.getElementById('kickoff-file-preview-title');
+        const meta = document.getElementById('kickoff-file-preview-meta');
+        const body = document.getElementById('kickoff-file-preview-body');
+        if (!overlay || !title || !body) return;
+
+        title.textContent = fileMeta.filename || 'Document preview';
+        if (meta) meta.textContent = `${fmtKickoffBytes(fileMeta.size || 0)} · ${fileMeta.preview_url || ''}`;
+        body.textContent = 'Loading...';
+        overlay.classList.remove('hidden');
+
+        try {
+            const res = await fetch(fileMeta.preview_url);
+            if (!res.ok) {
+                body.textContent = `Could not load file (HTTP ${res.status}).`;
+                return;
+            }
+            const text = await res.text();
+            // simpleMarkdown is the project-wide markdown helper; safe text
+            // because we generated this file ourselves on the server.
+            body.innerHTML = simpleMarkdown(text);
+        } catch (e) {
+            body.textContent = `Network error loading file: ${e.message || e}`;
+        }
+    }
+
+    function closeKickoffFilePreview() {
+        const overlay = document.getElementById('kickoff-file-preview-overlay');
+        if (overlay) overlay.classList.add('hidden');
+    }
+
+    document.getElementById('kickoff-file-preview-close')?.addEventListener('click', closeKickoffFilePreview);
+    document.getElementById('kickoff-file-preview-overlay')?.addEventListener('click', (e) => {
+        if (e.target?.id === 'kickoff-file-preview-overlay') closeKickoffFilePreview();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const ov = document.getElementById('kickoff-file-preview-overlay');
+            if (ov && !ov.classList.contains('hidden')) closeKickoffFilePreview();
+        }
+    });
+
     document.getElementById('generate-kickoff-btn')?.addEventListener('click', async () => {
         const synthesisContent = state.reportContents['synthesis'];
         if (!synthesisContent) {
@@ -913,72 +1226,286 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        const btn = document.getElementById('generate-kickoff-btn');
-        btn.disabled = true;
-        btn.textContent = '⏳ Generating Kickoff Pack...';
-
-        // Build agent summaries (first 500 chars of each)
+        // Build agent summaries (first 600 chars of each non-synthesis report)
         const agentSummaries = {};
         for (const [persona, content] of Object.entries(state.reportContents)) {
-            if (persona !== 'synthesis' && content) {
-                agentSummaries[persona] = content.substring(0, 500);
+            if (persona !== 'synthesis' && persona !== 'kickoff' && content) {
+                agentSummaries[persona] = content.substring(0, 600);
             }
         }
 
+        const btn = document.getElementById('generate-kickoff-btn');
+        btn.disabled = true;
+        btn.textContent = '⏳ Compiling Kickoff Pack...';
+
+        resetKickoffPanel();
+        setKickoffStage('analyzing');
+        setKickoffStatus('Starting compilation...');
+
+        // Reveal the card and scroll to it so the user sees progress
+        const card = document.getElementById('report-kickoff');
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+        const body = {
+            topic: state.currentTopic || '',
+            synthesis_content: synthesisContent,
+            agent_summaries: agentSummaries,
+            github_url: state.lastAnalyzedUrl || null,
+            business_context: collectBusinessContext() || null,
+            project_id: state.selectedProjectId || null,
+        };
+
         try {
-            const res = await fetch('/api/generate-kickoff-pack', {
+            const response = await fetch('/api/generate-kickoff-pack', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    synthesis_content: synthesisContent,
-                    agent_summaries: agentSummaries,
-                    github_url: state.lastAnalyzedUrl || null,
-                    business_context: collectBusinessContext() || null
-                })
+                body: JSON.stringify(body),
             });
 
-            const data = await res.json();
-            if (!res.ok) {
-                alert(`Error: ${data.detail}`);
+            if (!response.ok && response.headers.get('content-type')?.includes('application/json')) {
+                const err = await response.json();
+                setKickoffStatus(`Error: ${err.detail || 'Request failed'}`, 'error');
+                btn.disabled = false;
+                btn.textContent = '🚀 Generate Team Kickoff Pack';
                 return;
             }
 
-            const kickoffCard = document.getElementById('report-kickoff');
-            const kickoffContent = document.getElementById('kickoff-content');
-            if (kickoffCard && kickoffContent) {
-                kickoffContent.innerHTML = simpleMarkdown(data.content);
-                kickoffCard.style.display = 'block';
-                kickoffCard.classList.add('fade-in');
-                kickoffCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
 
-                // Store for download
-                state.reportContents['kickoff'] = data.content;
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
 
-                // Add download button to kickoff card header
-                const header = kickoffCard.querySelector('.report-card-header');
-                if (header && !header.querySelector('.kickoff-dl-btn')) {
-                    const dlBtn = document.createElement('button');
-                    dlBtn.className = 'kickoff-dl-btn secondary-btn btn-sm';
-                    dlBtn.innerText = '⬇️ Download Pack';
-                    dlBtn.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        const blob = new Blob([data.content], { type: 'text/markdown' });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = 'team-kickoff-pack.md';
-                        a.click();
-                        URL.revokeObjectURL(url);
-                    });
-                    header.appendChild(dlBtn);
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n');
+
+                let eventType = null;
+                for (const line of lines) {
+                    if (line.startsWith('event: ')) {
+                        eventType = line.substring(7).trim();
+                    } else if (line.startsWith('data: ')) {
+                        const raw = line.substring(6).trim();
+                        if (!raw) { eventType = null; continue; }
+                        let data = {};
+                        try { data = JSON.parse(raw); } catch (_) { /* ignore */ }
+
+                        if (eventType === 'status') {
+                            if (data.phase) setKickoffStage(data.phase);
+                            if (data.message) setKickoffStatus(data.message);
+                        } else if (eventType === 'file_ready') {
+                            appendKickoffFile({
+                                filename: data.filename,
+                                size: data.size,
+                                preview_url: data.preview_url,
+                            });
+                        } else if (eventType === 'kickoff_pack_ready') {
+                            setKickoffStage('complete');
+                            const sizeStr = fmtKickoffBytes(data.total_size || 0);
+                            setKickoffStatus(
+                                `Kickoff pack ready — ${data.file_count || '?'} files · ${sizeStr}. Click any file to preview, or download the zip.`,
+                                'success'
+                            );
+                            const link = document.getElementById('kickoff-pack-download-link');
+                            if (link && data.download_url) {
+                                link.href = data.download_url;
+                                link.classList.remove('hidden');
+                            }
+                            // Replace any previously appended files with the canonical list (in case
+                            // file_ready ordering produced duplicates).
+                            const list = document.getElementById('kickoff-pack-files');
+                            if (list && Array.isArray(data.files)) {
+                                while (list.firstChild) list.removeChild(list.firstChild);
+                                data.files.forEach(appendKickoffFile);
+                            }
+                        } else if (eventType === 'error') {
+                            setKickoffStatus(`Error: ${data.message || 'Kickoff pack generation failed'}`, 'error');
+                        }
+
+                        eventType = null;
+                    }
                 }
             }
         } catch (e) {
-            alert('Network error generating kickoff pack.');
-            console.error(e);
+            console.error('Kickoff pack error', e);
+            setKickoffStatus(`Network error: ${e.message || e}`, 'error');
         } finally {
             btn.disabled = false;
-            btn.textContent = '🚀 Generate Team Kickoff Pack';
+            btn.textContent = '🔁 Regenerate Kickoff Pack';
+        }
+    });
+
+    // ─────────────────────────────────────────
+    // Build Pack — compile into downloadable implementation folder
+    // ─────────────────────────────────────────
+    const BUILD_PACK_STAGES = [
+        'analyzing_reports',
+        'compiling_spec',
+        'generating_files',
+        'zipping',
+        'complete',
+    ];
+
+    function revealBuildPackBanner() {
+        const banner = document.getElementById('build-pack-banner');
+        if (banner) banner.classList.remove('hidden');
+    }
+
+    function resetBuildPackBanner() {
+        const banner = document.getElementById('build-pack-banner');
+        if (banner) banner.classList.add('hidden');
+
+        const btn = document.getElementById('generate-build-pack-btn');
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = '🛠️ Generate Build Pack';
+        }
+        const link = document.getElementById('build-pack-download-link');
+        if (link) {
+            link.classList.add('hidden');
+            link.removeAttribute('href');
+        }
+        const progress = document.getElementById('build-pack-progress');
+        if (progress) {
+            progress.classList.add('hidden');
+            progress.querySelectorAll('.build-pack-progress__stage').forEach(el => {
+                el.classList.remove('active', 'done');
+            });
+        }
+        const status = document.getElementById('build-pack-status');
+        if (status) {
+            status.textContent = '';
+            status.className = 'build-pack-status';
+        }
+    }
+
+    function setBuildPackStage(stage) {
+        const idx = BUILD_PACK_STAGES.indexOf(stage);
+        if (idx < 0) return;
+        const stages = document.querySelectorAll('.build-pack-progress__stage');
+        stages.forEach(el => {
+            const elStage = el.dataset.stage;
+            const elIdx = BUILD_PACK_STAGES.indexOf(elStage);
+            el.classList.remove('active', 'done');
+            if (elIdx < idx) el.classList.add('done');
+            else if (elIdx === idx) el.classList.add('active');
+        });
+    }
+
+    function setBuildPackStatus(message, kind = '') {
+        const status = document.getElementById('build-pack-status');
+        if (!status) return;
+        status.textContent = message || '';
+        status.className = 'build-pack-status' + (kind ? ' ' + kind : '');
+    }
+
+    function formatBytes(bytes) {
+        if (!bytes && bytes !== 0) return '';
+        const units = ['B', 'KB', 'MB', 'GB'];
+        let i = 0;
+        let n = bytes;
+        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+        return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+    }
+
+    document.getElementById('generate-build-pack-btn')?.addEventListener('click', async () => {
+        const synthesisContent = state.reportContents['synthesis'];
+        if (!synthesisContent) {
+            alert('Run a full analysis first — the Synthesis agent must finish before a build pack can be compiled.');
+            return;
+        }
+
+        // Collect every completed persona report except synthesis (which goes in its own field)
+        const results = {};
+        for (const [persona, content] of Object.entries(state.reportContents)) {
+            if (persona !== 'synthesis' && persona !== 'kickoff' && content) {
+                results[persona] = content;
+            }
+        }
+
+        const btn = document.getElementById('generate-build-pack-btn');
+        const link = document.getElementById('build-pack-download-link');
+        const progress = document.getElementById('build-pack-progress');
+
+        btn.disabled = true;
+        btn.textContent = '⏳ Compiling Build Pack...';
+        link?.classList.add('hidden');
+        progress?.classList.remove('hidden');
+        progress?.querySelectorAll('.build-pack-progress__stage').forEach(el => el.classList.remove('active', 'done'));
+        setBuildPackStage('analyzing_reports');
+        setBuildPackStatus('Starting build pack compilation...');
+
+        const body = {
+            topic: state.currentTopic || '',
+            results,
+            synthesis_content: synthesisContent,
+            recon_data: state.reconData || null,
+            client_context: collectBusinessContext() || state.currentBusinessContext || null,
+        };
+
+        try {
+            const response = await fetch('/api/generate-build-pack', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+
+            if (!response.ok && response.headers.get('content-type')?.includes('application/json')) {
+                const err = await response.json();
+                setBuildPackStatus(`Error: ${err.detail || 'Request failed'}`, 'error');
+                btn.disabled = false;
+                btn.textContent = '🛠️ Generate Build Pack';
+                return;
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n');
+
+                let eventType = null;
+                for (const line of lines) {
+                    if (line.startsWith('event: ')) {
+                        eventType = line.substring(7).trim();
+                    } else if (line.startsWith('data: ')) {
+                        const raw = line.substring(6).trim();
+                        if (!raw) { eventType = null; continue; }
+                        let data = {};
+                        try { data = JSON.parse(raw); } catch (_) { /* ignore */ }
+
+                        if (eventType === 'status') {
+                            if (data.phase) setBuildPackStage(data.phase);
+                            if (data.message) setBuildPackStatus(data.message);
+                        } else if (eventType === 'build_pack_ready') {
+                            setBuildPackStage('complete');
+                            const sizeStr = formatBytes(data.total_size || 0);
+                            setBuildPackStatus(
+                                `Build pack ready — ${data.file_count || '?'} files · ${sizeStr}. Click "Download Pack" to save.`,
+                                'success'
+                            );
+                            if (link && data.download_url) {
+                                link.href = data.download_url;
+                                link.classList.remove('hidden');
+                            }
+                        } else if (eventType === 'error') {
+                            setBuildPackStatus(`Error: ${data.message || 'Build pack generation failed'}`, 'error');
+                        }
+
+                        eventType = null;
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('Build pack error', e);
+            setBuildPackStatus(`Network error: ${e.message || e}`, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '🔁 Regenerate Build Pack';
         }
     });
 
@@ -1904,6 +2431,1452 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') closeAgentDetail();
+    });
+
+    // ─────────────────────────────────────────
+    // Projects Workspace (Phase 1)
+    // Built with DOM construction (no innerHTML) to keep escape-safety airtight.
+    // ─────────────────────────────────────────
+
+    const projectsState = {
+        flat: [],
+        tree: [],
+        activeId: null,
+        activeProject: null,
+        collapsed: new Set(),
+        modalMode: 'create',
+        modalParentId: null,
+        activeTab: 'overview',
+    };
+
+    function $pj(id) { return document.getElementById(id); }
+
+    function el(tag, props = {}, children = []) {
+        const node = document.createElement(tag);
+        for (const [k, v] of Object.entries(props || {})) {
+            if (v == null) continue;
+            if (k === 'class') node.className = v;
+            else if (k === 'dataset') {
+                for (const [dk, dv] of Object.entries(v)) node.dataset[dk] = dv;
+            } else if (k === 'text') {
+                node.textContent = v;
+            } else if (k === 'on') {
+                for (const [evt, handler] of Object.entries(v)) node.addEventListener(evt, handler);
+            } else if (k in node) {
+                node[k] = v;
+            } else {
+                node.setAttribute(k, v);
+            }
+        }
+        for (const child of (Array.isArray(children) ? children : [children])) {
+            if (child == null || child === false) continue;
+            if (typeof child === 'string') node.appendChild(document.createTextNode(child));
+            else node.appendChild(child);
+        }
+        return node;
+    }
+
+    function clearChildren(node) {
+        while (node && node.firstChild) node.removeChild(node.firstChild);
+    }
+
+    async function fetchProjectsTree() {
+        try {
+            const [flatRes, treeRes] = await Promise.all([
+                fetch('/api/projects?flat=true').then(r => r.json()),
+                fetch('/api/projects').then(r => r.json()),
+            ]);
+            projectsState.flat = Array.isArray(flatRes) ? flatRes : [];
+            projectsState.tree = Array.isArray(treeRes) ? treeRes : [];
+            renderProjectsTree();
+        } catch (e) {
+            console.error('fetchProjectsTree failed', e);
+            const container = $pj('projects-tree');
+            if (container) {
+                clearChildren(container);
+                container.appendChild(el('div', {
+                    class: 'projects-tree__empty',
+                    text: 'Could not load projects. Check the server logs.',
+                }));
+            }
+        }
+    }
+
+    function renderProjectsTree() {
+        const container = $pj('projects-tree');
+        if (!container) return;
+        const filter = ($pj('projects-search')?.value || '').toLowerCase().trim();
+        const roots = projectsState.tree;
+        clearChildren(container);
+        if (!roots.length) {
+            container.appendChild(el('div', {
+                class: 'projects-tree__empty',
+                text: 'No projects yet. Click ＋ New to create one.',
+            }));
+            return;
+        }
+        const matches = (node) => {
+            if (!filter) return true;
+            if ((node.name || '').toLowerCase().includes(filter)) return true;
+            return (node.children || []).some(matches);
+        };
+        const renderNode = (node, depth) => {
+            if (!matches(node)) return null;
+            const isActive = node.id === projectsState.activeId;
+            const hasChildren = (node.children || []).length > 0;
+            const collapsed = projectsState.collapsed.has(node.id);
+            const isLegacy = (node.metadata || {}).legacy_holder === true;
+            const row = el('div', {
+                class: 'project-tree-row' + (isActive ? ' active' : ''),
+                dataset: { projectId: String(node.id) },
+                on: {
+                    click: (e) => {
+                        if (e.target.dataset.toggle) return;
+                        selectProject(node.id);
+                    },
+                },
+            }, [
+                el('span', {
+                    class: 'project-tree-row__toggle',
+                    dataset: hasChildren ? { toggle: String(node.id) } : {},
+                    text: hasChildren ? (collapsed ? '▶' : '▼') : '·',
+                    on: hasChildren ? {
+                        click: (e) => {
+                            e.stopPropagation();
+                            if (projectsState.collapsed.has(node.id)) projectsState.collapsed.delete(node.id);
+                            else projectsState.collapsed.add(node.id);
+                            renderProjectsTree();
+                        },
+                    } : {},
+                }),
+                el('span', {
+                    class: 'project-tree-row__icon',
+                    text: isLegacy ? '📦' : (depth === 0 ? '📁' : '📂'),
+                }),
+                el('span', {
+                    class: 'project-tree-row__name',
+                    title: node.name || '',
+                    text: node.name || '(untitled)',
+                }),
+                isLegacy ? el('span', { class: 'project-tree-row__legacy-badge', text: 'Legacy' }) : null,
+            ]);
+
+            const nodeWrap = el('div', {
+                class: 'project-tree-node',
+                dataset: { projectId: String(node.id) },
+            }, [row]);
+
+            if (hasChildren) {
+                const childWrap = el('div', {
+                    class: 'project-tree-children' + (collapsed ? ' collapsed' : ''),
+                });
+                for (const c of node.children) {
+                    const rendered = renderNode(c, depth + 1);
+                    if (rendered) childWrap.appendChild(rendered);
+                }
+                nodeWrap.appendChild(childWrap);
+            }
+            return nodeWrap;
+        };
+        for (const root of roots) {
+            const n = renderNode(root, 0);
+            if (n) container.appendChild(n);
+        }
+    }
+
+    $pj('projects-search')?.addEventListener('input', () => renderProjectsTree());
+
+    function findProjectInFlat(id) {
+        return projectsState.flat.find(p => p.id === id) || null;
+    }
+
+    function buildBreadcrumbs(project) {
+        const chain = [];
+        let cursor = project;
+        const guard = new Set();
+        while (cursor && !guard.has(cursor.id)) {
+            guard.add(cursor.id);
+            chain.unshift(cursor);
+            cursor = cursor.parent_id ? findProjectInFlat(cursor.parent_id) : null;
+        }
+        return chain.slice(0, -1);
+    }
+
+    async function selectProject(id) {
+        projectsState.activeId = id;
+        try {
+            const res = await fetch(`/api/projects/${id}`);
+            if (!res.ok) throw new Error(await res.text());
+            projectsState.activeProject = await res.json();
+        } catch (e) {
+            console.error('selectProject fetch failed', e);
+            projectsState.activeProject = findProjectInFlat(id);
+        }
+        renderProjectsTree();
+        renderProjectDetail();
+    }
+
+    function renderProjectDetail() {
+        const empty = $pj('project-empty-state');
+        const detail = $pj('project-detail');
+        const proj = projectsState.activeProject;
+        if (!proj) {
+            if (empty) empty.classList.remove('hidden');
+            if (detail) detail.classList.add('hidden');
+            return;
+        }
+        if (empty) empty.classList.add('hidden');
+        if (detail) detail.classList.remove('hidden');
+
+        $pj('project-name').textContent = proj.name || '(untitled)';
+        $pj('project-goal').textContent = proj.goal || 'No goal set. Click ✎ Edit to add one.';
+        $pj('project-description').textContent = proj.description || 'No description yet.';
+
+        const crumbs = buildBreadcrumbs(proj);
+        const crumbEl = $pj('project-breadcrumbs');
+        if (crumbEl) {
+            clearChildren(crumbEl);
+            crumbs.forEach((c, idx) => {
+                if (idx > 0) crumbEl.appendChild(el('span', { class: 'crumb-sep', text: '›' }));
+                crumbEl.appendChild(el('span', {
+                    class: 'crumb',
+                    text: c.name || '',
+                    dataset: { projectId: String(c.id) },
+                    on: { click: () => selectProject(c.id) },
+                }));
+            });
+        }
+
+        const counts = proj.counts || {};
+        $pj('project-meta-client').textContent = 'Client: ' + (proj.client_id ? `#${proj.client_id}` : '—');
+        $pj('project-meta-materials').textContent = `Materials: ${counts.materials ?? 0}`;
+        $pj('project-meta-runs').textContent = `Runs: ${counts.runs ?? 0}`;
+        $pj('project-meta-artifacts').textContent = `Artifacts: ${counts.artifacts ?? 0}`;
+        $pj('project-meta-children').textContent = `Sub-projects: ${counts.children ?? 0}`;
+
+        // Phase 5 — cost chip
+        const costChip = $pj('project-meta-cost');
+        const totalCostCents = proj.total_cost_cents || 0;
+        if (costChip) {
+            if (totalCostCents > 0) {
+                costChip.textContent = `Cost: $${(totalCostCents / 100).toFixed(2)}`;
+                costChip.style.display = '';
+            } else {
+                costChip.textContent = '';
+                costChip.style.display = 'none';
+            }
+        }
+
+        const isLegacy = (proj.metadata || {}).legacy_holder === true;
+        const subBtn = $pj('project-new-subproject-btn');
+        if (subBtn) subBtn.disabled = isLegacy;
+
+        const childrenListEl = $pj('project-children-list');
+        if (childrenListEl) {
+            clearChildren(childrenListEl);
+            const kids = projectsState.flat.filter(p => p.parent_id === proj.id);
+            if (!kids.length) {
+                childrenListEl.appendChild(el('p', { class: 'muted-text', text: 'No sub-projects yet.' }));
+            } else {
+                for (const k of kids) {
+                    childrenListEl.appendChild(el('div', {
+                        class: 'project-child-card',
+                        dataset: { projectId: String(k.id) },
+                    }, [
+                        el('div', { class: 'project-child-card__main' }, [
+                            el('p', { class: 'project-child-card__name', text: '📂 ' + (k.name || '') }),
+                            el('div', { class: 'project-child-card__meta', text: k.goal || '' }),
+                        ]),
+                        el('button', {
+                            class: 'secondary-btn btn-sm',
+                            text: 'Open →',
+                            on: { click: () => selectProject(k.id) },
+                        }),
+                    ]));
+                }
+            }
+        }
+
+        renderActiveTabContent();
+    }
+
+    document.querySelectorAll('.project-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.project-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            projectsState.activeTab = tab.dataset.tab;
+            document.querySelectorAll('.project-tab-panel').forEach(p => {
+                if (p.dataset.panel === projectsState.activeTab) {
+                    p.classList.remove('hidden');
+                    p.classList.add('active');
+                } else {
+                    p.classList.add('hidden');
+                    p.classList.remove('active');
+                }
+            });
+            renderActiveTabContent();
+        });
+    });
+
+    async function renderActiveTabContent() {
+        const proj = projectsState.activeProject;
+        if (!proj) return;
+        const tab = projectsState.activeTab;
+        if (tab === 'materials') return renderMaterialsTab(proj.id);
+        if (tab === 'runs') return renderRunsTab(proj.id);
+        if (tab === 'artifacts') return renderArtifactsTab(proj.id);
+        if (tab === 'backlog') return renderBacklogTab(proj.id);
+        if (tab === 'documents') return renderDocumentsTab(proj.id);
+    }
+
+    function formatBytes(n) {
+        if (n == null) return '';
+        if (n < 1024) return n + ' B';
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+        return (n / (1024 * 1024)).toFixed(2) + ' MB';
+    }
+
+    async function renderMaterialsTab(projectId) {
+        const listEl = $pj('materials-list');
+        if (!listEl) return;
+        clearChildren(listEl);
+        listEl.appendChild(el('p', { class: 'muted-text', text: 'Loading...' }));
+        try {
+            const rows = await fetch(`/api/projects/${projectId}/materials`).then(r => r.json());
+            clearChildren(listEl);
+            if (!Array.isArray(rows) || !rows.length) {
+                listEl.appendChild(el('p', { class: 'muted-text', text: 'No materials attached yet.' }));
+                return;
+            }
+            for (const m of rows) {
+                const label = m.filename || m.source_url || (m.content_text || '').slice(0, 60) || 'Untitled';
+                const meta = m.metadata || {};
+                const extractedKind = meta.extracted || m.kind || '';
+                const childCount = meta.entry_count ? ` · ${meta.entry_count} entries` : '';
+                const pageCount = meta.pages ? ` · ${meta.pages} pages` : '';
+                const errorBadge = meta.error
+                    ? ' · ⚠ ' + String(meta.error).slice(0, 60)
+                    : '';
+
+                const card = el('div', {
+                    class: 'material-card',
+                    dataset: { id: String(m.id) },
+                    on: {
+                        click: (e) => {
+                            // Don't open preview when clicking the Remove button.
+                            if (e.target.dataset.del) return;
+                            openMaterialPreview(projectId, m.id);
+                        },
+                    },
+                }, [
+                    el('div', { class: 'material-card__main' }, [
+                        el('p', { class: 'material-card__name' }, [
+                            el('span', { class: 'material-kind-badge', text: m.kind || '' }),
+                            ' ' + label,
+                            extractedKind ? el('span', {
+                                class: 'material-card__extracted kind-' + extractedKind,
+                                text: extractedKind,
+                            }) : null,
+                        ]),
+                        el('div', {
+                            class: 'material-card__meta',
+                            text: (m.size_bytes ? `${formatBytes(m.size_bytes)} · ` : '') +
+                                  (m.created_at ? new Date(m.created_at).toLocaleString() : '') +
+                                  childCount + pageCount + errorBadge,
+                        }),
+                    ]),
+                    el('button', {
+                        class: 'secondary-btn btn-sm',
+                        text: 'Remove',
+                        dataset: { del: String(m.id) },
+                        on: {
+                            click: async (e) => {
+                                e.stopPropagation();
+                                if (!confirm('Remove this material?')) return;
+                                await fetch(`/api/projects/${projectId}/materials/${m.id}`, { method: 'DELETE' });
+                                renderMaterialsTab(projectId);
+                                selectProject(projectId);
+                            },
+                        },
+                    }),
+                ]);
+                listEl.appendChild(card);
+            }
+        } catch (e) {
+            clearChildren(listEl);
+            listEl.appendChild(el('p', { class: 'muted-text', text: 'Could not load materials.' }));
+        }
+    }
+
+    // ── Drag-drop file upload ───────────────
+    function setupMaterialDropzone() {
+        const zone = $pj('material-dropzone');
+        const input = $pj('material-file-input');
+        if (!zone || !input) return;
+
+        zone.addEventListener('click', () => input.click());
+
+        ['dragenter', 'dragover'].forEach(ev =>
+            zone.addEventListener(ev, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                zone.classList.add('dragover');
+            })
+        );
+        ['dragleave', 'drop'].forEach(ev =>
+            zone.addEventListener(ev, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                zone.classList.remove('dragover');
+            })
+        );
+
+        zone.addEventListener('drop', (e) => {
+            const files = Array.from(e.dataTransfer?.files || []);
+            if (files.length) uploadMaterials(files);
+        });
+        input.addEventListener('change', () => {
+            const files = Array.from(input.files || []);
+            if (files.length) uploadMaterials(files);
+            input.value = '';  // allow re-uploading the same file
+        });
+    }
+
+    async function uploadMaterials(files) {
+        const proj = projectsState.activeProject;
+        if (!proj) { alert('Pick a project first.'); return; }
+        const statusEl = $pj('material-upload-status');
+        if (statusEl) {
+            clearChildren(statusEl);
+            const summary = el('div', { text: `Uploading ${files.length} file(s)...` });
+            statusEl.appendChild(summary);
+        }
+        const fd = new FormData();
+        for (const f of files) fd.append('files', f, f.name);
+        try {
+            const res = await fetch(`/api/projects/${proj.id}/materials/upload`, {
+                method: 'POST',
+                body: fd,
+            });
+            const data = await res.json();
+            if (statusEl) {
+                clearChildren(statusEl);
+                const ok = data.saved_count || 0;
+                statusEl.appendChild(el('div', {
+                    class: 'upload-row ok',
+                    text: `✓ Saved ${ok} file(s)`,
+                }));
+                for (const e of (data.errors || [])) {
+                    statusEl.appendChild(el('div', {
+                        class: 'upload-row error',
+                        text: `✗ ${e.filename}: ${e.error}`,
+                    }));
+                }
+            }
+            renderMaterialsTab(proj.id);
+            selectProject(proj.id);
+        } catch (e) {
+            if (statusEl) {
+                clearChildren(statusEl);
+                statusEl.appendChild(el('div', { class: 'upload-row error', text: 'Upload failed: ' + e.message }));
+            }
+        }
+    }
+
+    // ── Material preview modal ──────────────
+    async function openMaterialPreview(projectId, materialId) {
+        const overlay = $pj('material-preview-overlay');
+        const titleEl = $pj('material-preview-title');
+        const metaEl = $pj('material-preview-meta');
+        const bodyEl = $pj('material-preview-body');
+        if (!overlay || !bodyEl) return;
+        clearChildren(metaEl);
+        bodyEl.textContent = 'Loading...';
+        overlay.classList.remove('hidden');
+        try {
+            const data = await fetch(`/api/projects/${projectId}/materials/${materialId}/preview`).then(r => r.json());
+            titleEl.textContent = data.filename || '(untitled)';
+            const metaParts = [
+                data.kind || '',
+                data.mime_type || '',
+                data.size_bytes ? formatBytes(data.size_bytes) : '',
+                'extracted: ' + (data.metadata?.extracted || 'none'),
+                'body: ' + (data.content_length || 0) + ' chars',
+            ].filter(Boolean);
+            metaEl.textContent = metaParts.join(' · ');
+            if (data.metadata?.error) {
+                metaEl.appendChild(el('div', {
+                    style: 'color:#fca5a5; margin-top:4px;',
+                    text: '⚠ ' + data.metadata.error,
+                }));
+            }
+            bodyEl.textContent = data.content_text || '(no extracted text — binary or empty)';
+        } catch (e) {
+            bodyEl.textContent = 'Could not load preview: ' + e.message;
+        }
+    }
+
+    function closeMaterialPreview() {
+        const overlay = $pj('material-preview-overlay');
+        if (overlay) overlay.classList.add('hidden');
+    }
+
+    $pj('material-preview-close')?.addEventListener('click', closeMaterialPreview);
+    $pj('material-preview-overlay')?.addEventListener('click', (e) => {
+        if (e.target.id === 'material-preview-overlay') closeMaterialPreview();
+    });
+
+    setupMaterialDropzone();
+
+    $pj('add-material-btn')?.addEventListener('click', async () => {
+        const proj = projectsState.activeProject;
+        if (!proj) return;
+        const kind = $pj('material-kind').value;
+        const title = $pj('material-title').value.trim();
+        const body = $pj('material-body').value.trim();
+        if (!body) { alert('Paste something to attach.'); return; }
+        const payload = { project_id: proj.id, kind };
+        if (kind === 'url') {
+            payload.source_url = body;
+            payload.filename = title || body;
+        } else {
+            payload.content_text = body;
+            payload.filename = title || 'Pasted text';
+            payload.size_bytes = body.length;
+        }
+        const res = await fetch(`/api/projects/${proj.id}/materials`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!res.ok) { alert('Could not save material.'); return; }
+        $pj('material-body').value = '';
+        $pj('material-title').value = '';
+        renderMaterialsTab(proj.id);
+        selectProject(proj.id);
+    });
+
+    async function renderRunsTab(projectId) {
+        const listEl = $pj('runs-list');
+        if (!listEl) return;
+        clearChildren(listEl);
+        listEl.appendChild(el('p', { class: 'muted-text', text: 'Loading...' }));
+        try {
+            const rows = await fetch(`/api/projects/${projectId}/runs`).then(r => r.json());
+            clearChildren(listEl);
+            if (!Array.isArray(rows) || !rows.length) {
+                listEl.appendChild(el('p', {
+                    class: 'muted-text',
+                    text: 'No runs yet. Kick off the agent fleet using ▶ Run agent fleet.',
+                }));
+                return;
+            }
+            for (const r of rows) {
+                const parts = [
+                    el('span', { class: 'run-kind-badge', text: r.kind || '' }),
+                    ' ',
+                    el('span', { class: 'run-status-badge status-' + (r.status || ''), text: r.status || '' }),
+                ];
+                if (r.error) {
+                    parts.push(' ', el('span', {
+                        style: 'color:#fca5a5;',
+                        text: '· ' + String(r.error).slice(0, 80),
+                    }));
+                }
+                const started = r.started_at ? new Date(r.started_at).toLocaleString() : '';
+                const finished = r.finished_at ? ' · Finished ' + new Date(r.finished_at).toLocaleString() : '';
+                const cost = r.token_cost_cents ? ' · $' + (r.token_cost_cents / 100).toFixed(2) : '';
+                listEl.appendChild(el('div', { class: 'run-card' }, [
+                    el('div', { class: 'run-card__main' }, [
+                        el('p', {}, parts),
+                        el('div', { class: 'run-card__meta', text: 'Started ' + started + finished + cost }),
+                    ]),
+                ]));
+            }
+        } catch (e) {
+            clearChildren(listEl);
+            listEl.appendChild(el('p', { class: 'muted-text', text: 'Could not load runs.' }));
+        }
+    }
+
+    async function renderArtifactsTab(projectId) {
+        const listEl = $pj('artifacts-list');
+        if (!listEl) return;
+        clearChildren(listEl);
+        listEl.appendChild(el('p', { class: 'muted-text', text: 'Loading...' }));
+        try {
+            const rows = await fetch(`/api/projects/${projectId}/artifacts`).then(r => r.json());
+            clearChildren(listEl);
+            if (!Array.isArray(rows) || !rows.length) {
+                listEl.appendChild(el('p', { class: 'muted-text', text: 'No artifacts yet.' }));
+                return;
+            }
+            for (const a of rows) {
+                listEl.appendChild(el('div', { class: 'artifact-card' }, [
+                    el('div', { class: 'artifact-card__main' }, [
+                        el('p', { class: 'artifact-card__title' }, [
+                            el('span', {
+                                class: 'artifact-kind-badge kind-' + (a.kind || ''),
+                                text: a.kind || '',
+                            }),
+                            ' ' + (a.title || a.persona_key || 'Untitled'),
+                        ]),
+                        el('div', {
+                            class: 'artifact-card__meta',
+                            text: (a.persona_key ? a.persona_key + ' · ' : '') +
+                                  (a.created_at ? new Date(a.created_at).toLocaleString() : ''),
+                        }),
+                    ]),
+                ]));
+            }
+        } catch (e) {
+            clearChildren(listEl);
+            listEl.appendChild(el('p', { class: 'muted-text', text: 'Could not load artifacts.' }));
+        }
+    }
+
+    async function populateClientsDropdown() {
+        const select = $pj('project-form-client');
+        if (!select) return;
+        try {
+            const clients = await fetch('/api/clients').then(r => r.json());
+            clearChildren(select);
+            select.appendChild(el('option', { value: '', text: '-- Unassigned --' }));
+            for (const c of (clients || [])) {
+                select.appendChild(el('option', { value: String(c.id), text: c.name || '' }));
+            }
+        } catch (e) { /* non-fatal */ }
+    }
+
+    function openProjectModal({ mode, project = null, parentId = null }) {
+        projectsState.modalMode = mode;
+        projectsState.modalParentId = parentId;
+
+        $pj('project-modal-title').textContent =
+            mode === 'edit' ? 'Edit Project' : (parentId ? 'New Sub-project' : 'New Project');
+
+        $pj('project-form-name').value = project?.name || '';
+        $pj('project-form-goal').value = project?.goal || '';
+        $pj('project-form-description').value = project?.description || '';
+        $pj('project-form-client').value = project?.client_id || '';
+
+        const parentGroup = document.querySelector('.project-form-parent-group');
+        const inheritGroup = document.querySelector('.project-form-inherit-group');
+        if (parentId) {
+            const parent = findProjectInFlat(parentId);
+            $pj('project-form-parent').value = parent?.name || `#${parentId}`;
+            parentGroup?.classList.remove('hidden');
+            inheritGroup?.classList.remove('hidden');
+            $pj('project-form-inherits').checked =
+                project ? (project.inherits_materials !== false) : true;
+        } else {
+            parentGroup?.classList.add('hidden');
+            inheritGroup?.classList.add('hidden');
+        }
+
+        populateClientsDropdown().then(() => {
+            if (project?.client_id) $pj('project-form-client').value = project.client_id;
+        });
+
+        $pj('project-modal-overlay').classList.remove('hidden');
+        setTimeout(() => $pj('project-form-name').focus(), 60);
+    }
+
+    function closeProjectModal() {
+        $pj('project-modal-overlay').classList.add('hidden');
+    }
+
+    $pj('project-modal-close')?.addEventListener('click', closeProjectModal);
+    $pj('project-form-cancel')?.addEventListener('click', closeProjectModal);
+    $pj('project-modal-overlay')?.addEventListener('click', (e) => {
+        if (e.target.id === 'project-modal-overlay') closeProjectModal();
+    });
+
+    $pj('new-project-btn')?.addEventListener('click', () => openProjectModal({ mode: 'create' }));
+    $pj('new-project-btn-alt')?.addEventListener('click', () => openProjectModal({ mode: 'create' }));
+    $pj('project-new-subproject-btn')?.addEventListener('click', () => {
+        if (!projectsState.activeProject) return;
+        openProjectModal({ mode: 'create', parentId: projectsState.activeProject.id });
+    });
+    $pj('project-edit-btn')?.addEventListener('click', () => {
+        if (!projectsState.activeProject) return;
+        openProjectModal({
+            mode: 'edit',
+            project: projectsState.activeProject,
+            parentId: projectsState.activeProject.parent_id || null,
+        });
+    });
+
+    $pj('project-form-save')?.addEventListener('click', async () => {
+        const name = $pj('project-form-name').value.trim();
+        if (!name) { alert('Project name is required.'); return; }
+        const payload = {
+            name,
+            goal: $pj('project-form-goal').value.trim() || null,
+            description: $pj('project-form-description').value.trim() || null,
+            client_id: Number($pj('project-form-client').value) || null,
+        };
+        if (projectsState.modalParentId) {
+            payload.parent_id = projectsState.modalParentId;
+            payload.inherits_materials = $pj('project-form-inherits').checked;
+        }
+        try {
+            let res;
+            if (projectsState.modalMode === 'edit' && projectsState.activeProject) {
+                res = await fetch(`/api/projects/${projectsState.activeProject.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+            } else {
+                res = await fetch('/api/projects', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+            }
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                alert('Could not save project: ' + (err.detail || res.statusText));
+                return;
+            }
+            const saved = await res.json();
+            closeProjectModal();
+            await fetchProjectsTree();
+            selectProject(saved.id);
+        } catch (e) {
+            alert('Network error saving project.');
+        }
+    });
+
+    $pj('project-run-btn')?.addEventListener('click', () => {
+        if (!projectsState.activeProject) return;
+        state.selectedProjectId = projectsState.activeProject.id;
+        state.selectedProjectName = projectsState.activeProject.name;
+        const ingestionBtn = document.querySelector('.nav-btn[data-target="ingestion"]');
+        if (ingestionBtn) ingestionBtn.click();
+    });
+
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+        if (btn.dataset.target === 'projects') {
+            btn.addEventListener('click', fetchProjectsTree);
+        }
+    });
+
+    fetchProjectsTree();
+
+    /* ============================================================
+       Phase 4 — Interactive Backlog (per-project Kanban)
+       Reads from / writes to the REST endpoints under
+       /api/projects/{id}/backlog. Items are stored server-side as
+       project_artifacts with kind='backlog_item'.
+       ============================================================ */
+
+    const BACKLOG_COLUMNS = [
+        { status: 'backlog',     label: 'Backlog' },
+        { status: 'todo',        label: 'To Do' },
+        { status: 'in_progress', label: 'In Progress' },
+        { status: 'done',        label: 'Done' },
+    ];
+
+    const BACKLOG_PRIORITIES = ['high', 'med', 'low'];
+    const BACKLOG_STATUSES   = BACKLOG_COLUMNS.map(c => c.status);
+
+    const backlogState = {
+        projectId: null,
+        items: [],
+        loading: false,
+        editing: null,        // currently-edited item (or null for "new")
+        dragId: null,         // id being dragged
+    };
+
+    function backlogStatus(text, kind) {
+        const node = $pj('backlog-status');
+        if (!node) return;
+        node.textContent = text || '';
+        node.classList.remove('is-error', 'is-success', 'is-busy');
+        if (kind) node.classList.add('is-' + kind);
+    }
+
+    function backlogCounts(items) {
+        const counts = { total: items.length };
+        for (const s of BACKLOG_STATUSES) counts[s] = 0;
+        for (const it of items) {
+            const s = (it.structured_data && it.structured_data.status) || 'backlog';
+            if (counts[s] != null) counts[s] += 1;
+        }
+        const node = $pj('backlog-counts');
+        if (node) {
+            node.textContent = `${counts.total} item${counts.total === 1 ? '' : 's'}` +
+                ` · ${counts.in_progress} in progress · ${counts.done} done`;
+        }
+        return counts;
+    }
+
+    function backlogItemView(item) {
+        // Normalise an artifact row from the API into a flat view-model.
+        const sd = item.structured_data || {};
+        return {
+            id: item.id,
+            title: item.title || sd.title || '(untitled)',
+            story: sd.story || '',
+            acceptance_criteria: Array.isArray(sd.acceptance_criteria) ? sd.acceptance_criteria : [],
+            points: Number.isFinite(sd.points) ? sd.points : (sd.points ? Number(sd.points) : 0),
+            priority: sd.priority || 'med',
+            status: sd.status || 'backlog',
+            source: sd.source || 'manual',
+            epic: sd.epic || '',
+            raw: item,
+        };
+    }
+
+    async function renderBacklogTab(projectId) {
+        backlogState.projectId = projectId;
+        const board = $pj('backlog-board');
+        if (!board) return;
+
+        // Skeleton — render 4 empty columns immediately so UI feels responsive.
+        renderBacklog([]);
+        backlogStatus('Loading…', 'busy');
+
+        try {
+            const res = await fetch(`/api/projects/${projectId}/backlog`);
+            if (!res.ok) throw new Error(await res.text());
+            const items = await res.json();
+            backlogState.items = Array.isArray(items) ? items : [];
+            renderBacklog(backlogState.items);
+            backlogStatus('');
+        } catch (e) {
+            console.error('backlog fetch failed', e);
+            backlogStatus('Could not load backlog: ' + (e.message || e), 'error');
+        }
+    }
+
+    function renderBacklog(items) {
+        const board = $pj('backlog-board');
+        if (!board) return;
+        clearChildren(board);
+
+        const views = items.map(backlogItemView);
+        const byStatus = {};
+        for (const s of BACKLOG_STATUSES) byStatus[s] = [];
+        for (const v of views) {
+            const bucket = byStatus[v.status] ? v.status : 'backlog';
+            byStatus[bucket].push(v);
+        }
+        backlogCounts(items);
+
+        for (const col of BACKLOG_COLUMNS) {
+            board.appendChild(renderBacklogColumn(col, byStatus[col.status] || []));
+        }
+    }
+
+    function renderBacklogColumn(col, items) {
+        const colNode = el('div', {
+            class: 'backlog-col',
+            dataset: { status: col.status },
+            on: {
+                dragover: (e) => {
+                    if (backlogState.dragId == null) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    colNode.classList.add('is-drop-target');
+                },
+                dragleave: () => colNode.classList.remove('is-drop-target'),
+                drop: async (e) => {
+                    e.preventDefault();
+                    colNode.classList.remove('is-drop-target');
+                    const id = backlogState.dragId;
+                    backlogState.dragId = null;
+                    if (id == null) return;
+                    await moveBacklogItem(id, col.status);
+                },
+            },
+        }, [
+            el('div', { class: 'backlog-col__header' }, [
+                el('span', { text: col.label }),
+                el('span', { class: 'backlog-col__count', text: String(items.length) }),
+            ]),
+        ]);
+
+        const body = el('div', { class: 'backlog-col__body' });
+        if (!items.length) {
+            body.appendChild(el('div', { class: 'backlog-empty', text: 'Drop stories here' }));
+        } else {
+            for (const it of items) body.appendChild(renderBacklogItem(it));
+        }
+        colNode.appendChild(body);
+        return colNode;
+    }
+
+    function renderBacklogItem(view) {
+        const priority = BACKLOG_PRIORITIES.includes(view.priority) ? view.priority : 'med';
+        const points = view.points && view.points > 0 ? view.points : null;
+        const card = el('div', {
+            class: 'backlog-item',
+            draggable: true,
+            dataset: { id: String(view.id), status: view.status },
+            on: {
+                click: () => openBacklogEditor(view),
+                dragstart: (e) => {
+                    backlogState.dragId = view.id;
+                    card.classList.add('is-dragging');
+                    try { e.dataTransfer.setData('text/plain', String(view.id)); } catch (_) {}
+                    e.dataTransfer.effectAllowed = 'move';
+                },
+                dragend: () => {
+                    card.classList.remove('is-dragging');
+                    document.querySelectorAll('.backlog-col.is-drop-target')
+                        .forEach(n => n.classList.remove('is-drop-target'));
+                },
+            },
+        }, [
+            el('div', { class: 'backlog-item__top' }, [
+                el('span', {
+                    class: `backlog-item__priority priority-${priority}`,
+                    text: priority.toUpperCase(),
+                }),
+                points != null ? el('span', { class: 'backlog-item__points', text: String(points) }) : null,
+            ].filter(Boolean)),
+            el('h4', { class: 'backlog-item__title', text: view.title }),
+            view.story ? el('p', { class: 'backlog-item__story', text: view.story }) : null,
+            el('div', { class: 'backlog-item__footer' }, [
+                el('span', {
+                    class: `backlog-item__source source-${view.source}`,
+                    text: view.source === 'ba_agent' ? 'BA agent' : view.source,
+                }),
+                el('span', {
+                    class: 'backlog-item__epic',
+                    text: view.epic || '',
+                    title: view.epic || '',
+                }),
+            ]),
+        ].filter(Boolean));
+        return card;
+    }
+
+    async function moveBacklogItem(itemId, newStatus) {
+        if (!BACKLOG_STATUSES.includes(newStatus)) return;
+        const projectId = backlogState.projectId;
+        const local = backlogState.items.find(i => i.id === itemId);
+        // Same-column drop is a no-op — skip the round-trip.
+        if (local && (local.structured_data || {}).status === newStatus) return;
+        // Optimistic local update — keeps the UI snappy.
+        if (local) {
+            local.structured_data = local.structured_data || {};
+            local.structured_data.status = newStatus;
+            renderBacklog(backlogState.items);
+        }
+        try {
+            const res = await fetch(`/api/projects/${projectId}/backlog/${itemId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: newStatus }),
+            });
+            if (!res.ok) throw new Error(await res.text());
+            const updated = await res.json();
+            // Refresh that single item's structured_data from authoritative response.
+            if (local && updated && updated.structured_data) {
+                local.structured_data = updated.structured_data;
+                renderBacklog(backlogState.items);
+            }
+            backlogStatus('Moved to ' + newStatus.replace('_', ' '), 'success');
+            setTimeout(() => backlogStatus(''), 1600);
+        } catch (e) {
+            console.error('moveBacklogItem failed', e);
+            backlogStatus('Move failed — reloading.', 'error');
+            renderBacklogTab(projectId);
+        }
+    }
+
+    /* ----- Edit / create modal ----- */
+
+    function openBacklogEditor(view) {
+        backlogState.editing = view; // null = new
+        const overlay = $pj('backlog-edit-overlay');
+        const heading = $pj('backlog-edit-title');
+        const titleI  = $pj('backlog-edit-title-input');
+        const storyI  = $pj('backlog-edit-story-input');
+        const acI     = $pj('backlog-edit-ac-input');
+        const ptsI    = $pj('backlog-edit-points-input');
+        const prioI   = $pj('backlog-edit-priority-input');
+        const statI   = $pj('backlog-edit-status-input');
+        const epicI   = $pj('backlog-edit-epic-input');
+        const delBtn  = $pj('backlog-edit-delete');
+
+        if (view) {
+            heading.textContent = 'Edit story';
+            titleI.value = view.title || '';
+            storyI.value = view.story || '';
+            acI.value    = (view.acceptance_criteria || []).join('\n');
+            ptsI.value   = view.points || 0;
+            prioI.value  = BACKLOG_PRIORITIES.includes(view.priority) ? view.priority : 'med';
+            statI.value  = BACKLOG_STATUSES.includes(view.status) ? view.status : 'backlog';
+            epicI.value  = view.epic || '';
+            if (delBtn) delBtn.classList.remove('hidden');
+        } else {
+            heading.textContent = 'New story';
+            titleI.value = '';
+            storyI.value = '';
+            acI.value    = '';
+            ptsI.value   = 3;
+            prioI.value  = 'med';
+            statI.value  = 'backlog';
+            epicI.value  = '';
+            if (delBtn) delBtn.classList.add('hidden');
+        }
+        overlay.classList.remove('hidden');
+        // Defer focus so the overlay paint finishes first.
+        setTimeout(() => titleI && titleI.focus(), 50);
+    }
+
+    function closeBacklogEditor() {
+        const overlay = $pj('backlog-edit-overlay');
+        if (overlay) overlay.classList.add('hidden');
+        backlogState.editing = null;
+    }
+
+    function readBacklogEditor() {
+        const ac = ($pj('backlog-edit-ac-input').value || '')
+            .split(/\r?\n/)
+            .map(s => s.trim())
+            .filter(Boolean);
+        const ptsRaw = parseInt($pj('backlog-edit-points-input').value, 10);
+        return {
+            title:    ($pj('backlog-edit-title-input').value || '').trim(),
+            story:    ($pj('backlog-edit-story-input').value || '').trim(),
+            acceptance_criteria: ac,
+            points:   Number.isFinite(ptsRaw) ? ptsRaw : 0,
+            priority: $pj('backlog-edit-priority-input').value || 'med',
+            status:   $pj('backlog-edit-status-input').value || 'backlog',
+            epic:     ($pj('backlog-edit-epic-input').value || '').trim(),
+        };
+    }
+
+    async function saveBacklogItemFromEditor() {
+        const projectId = backlogState.projectId;
+        if (!projectId) return;
+        const payload = readBacklogEditor();
+        if (!payload.title) {
+            backlogStatus('Title is required.', 'error');
+            return;
+        }
+        const editing = backlogState.editing;
+        try {
+            backlogStatus(editing ? 'Saving…' : 'Creating…', 'busy');
+            let res;
+            if (editing) {
+                res = await fetch(`/api/projects/${projectId}/backlog/${editing.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+            } else {
+                payload.source = 'manual';
+                res = await fetch(`/api/projects/${projectId}/backlog`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+            }
+            if (!res.ok) throw new Error(await res.text());
+            closeBacklogEditor();
+            backlogStatus(editing ? 'Saved.' : 'Created.', 'success');
+            await renderBacklogTab(projectId);
+            setTimeout(() => backlogStatus(''), 1600);
+        } catch (e) {
+            console.error('saveBacklogItemFromEditor failed', e);
+            backlogStatus('Save failed: ' + (e.message || e), 'error');
+        }
+    }
+
+    async function deleteBacklogItemFromEditor() {
+        const editing = backlogState.editing;
+        const projectId = backlogState.projectId;
+        if (!editing || !projectId) return;
+        if (!confirm(`Delete "${editing.title}"? This cannot be undone from the UI.`)) return;
+        try {
+            backlogStatus('Deleting…', 'busy');
+            const res = await fetch(`/api/projects/${projectId}/backlog/${editing.id}`, {
+                method: 'DELETE',
+            });
+            if (!res.ok) throw new Error(await res.text());
+            closeBacklogEditor();
+            backlogStatus('Deleted.', 'success');
+            await renderBacklogTab(projectId);
+            setTimeout(() => backlogStatus(''), 1600);
+        } catch (e) {
+            console.error('deleteBacklogItemFromEditor failed', e);
+            backlogStatus('Delete failed: ' + (e.message || e), 'error');
+        }
+    }
+
+    async function importBacklogFromBA() {
+        const projectId = backlogState.projectId;
+        if (!projectId) return;
+        try {
+            backlogStatus('Importing latest BA stories…', 'busy');
+            const res = await fetch(`/api/projects/${projectId}/backlog/import-from-ba`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),  // server falls back to most recent stored BA artifact
+            });
+            if (!res.ok) throw new Error(await res.text());
+            const summary = await res.json();
+            await renderBacklogTab(projectId);
+            const msg = `Imported ${summary.imported || 0} new (${summary.skipped_existing || 0} duplicate).`;
+            backlogStatus(msg, summary.imported ? 'success' : null);
+            setTimeout(() => backlogStatus(''), 2400);
+        } catch (e) {
+            console.error('importBacklogFromBA failed', e);
+            backlogStatus('Import failed: ' + (e.message || e), 'error');
+        }
+    }
+
+    /* ----- Toolbar + modal wiring (one-time, on DOM ready) ----- */
+
+    $pj('backlog-new-btn')?.addEventListener('click', () => {
+        if (!backlogState.projectId) return;
+        openBacklogEditor(null);
+    });
+
+    $pj('backlog-import-ba-btn')?.addEventListener('click', () => {
+        if (!backlogState.projectId) return;
+        importBacklogFromBA();
+    });
+
+    $pj('backlog-refresh-btn')?.addEventListener('click', () => {
+        if (!backlogState.projectId) return;
+        renderBacklogTab(backlogState.projectId);
+    });
+
+    $pj('backlog-edit-close')?.addEventListener('click', closeBacklogEditor);
+    $pj('backlog-edit-cancel')?.addEventListener('click', closeBacklogEditor);
+    $pj('backlog-edit-save')?.addEventListener('click', saveBacklogItemFromEditor);
+    $pj('backlog-edit-delete')?.addEventListener('click', deleteBacklogItemFromEditor);
+
+    // Click outside the modal to close.
+    $pj('backlog-edit-overlay')?.addEventListener('click', (e) => {
+        if (e.target && e.target.id === 'backlog-edit-overlay') closeBacklogEditor();
+    });
+
+    // Escape closes the editor.
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const overlay = $pj('backlog-edit-overlay');
+            if (overlay && !overlay.classList.contains('hidden')) closeBacklogEditor();
+        }
+    });
+
+    // ═══════════════════════════════════════════════
+    // Phase 7 — Project Documents (Living Knowledge)
+    // ═══════════════════════════════════════════════
+
+    const DOC_META = {
+        doc_run_summary:     { icon: '📄', label: 'Run Summary',           color: '#60a5fa' },
+        doc_lessons_learned: { icon: '💡', label: 'Lessons Learned',       color: '#fbbf24' },
+        doc_decision_log:    { icon: '📐', label: 'Decision Log',          color: '#a78bfa' },
+        doc_risk_register:   { icon: '⚠️', label: 'Risk Register',        color: '#f87171' },
+        doc_tech_debt:       { icon: '🔧', label: 'Technical Debt',        color: '#fb923c' },
+        doc_agent_notes:     { icon: '🤖', label: 'Agent Knowledge Notes', color: '#34d399' },
+    };
+
+    async function renderDocumentsTab(projectId) {
+        const container = document.getElementById('project-docs-list');
+        if (!container) return;
+        container.innerHTML = '<p class="muted-text">Loading documents...</p>';
+
+        try {
+            const res = await fetch(`/api/projects/${projectId}/documents`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const docs = await res.json();
+
+            if (!docs.length) {
+                container.innerHTML = '<p class="muted-text">No documents yet. Run an analysis to generate project documentation.</p>';
+                return;
+            }
+
+            container.innerHTML = docs.map(doc => {
+                const meta = DOC_META[doc.doc_kind] || { icon: '📄', label: doc.doc_kind, color: '#888' };
+                const updated = doc.updated_at ? new Date(doc.updated_at).toLocaleDateString() : '';
+                return `
+                    <details class="project-doc-card" style="border-left: 3px solid ${meta.color};">
+                        <summary class="project-doc-card__header">
+                            <span class="project-doc-card__icon">${meta.icon}</span>
+                            <span class="project-doc-card__title">${meta.label}</span>
+                            ${updated ? `<span class="project-doc-card__date">Updated: ${updated}</span>` : ''}
+                        </summary>
+                        <div class="project-doc-card__body">${simpleMarkdown(doc.content || '(empty)')}</div>
+                    </details>`;
+            }).join('');
+        } catch (e) {
+            container.innerHTML = `<p class="muted-text">Failed to load documents: ${e.message}</p>`;
+        }
+    }
+
+    // Wire up the refresh button
+    document.getElementById('docs-refresh-btn')?.addEventListener('click', () => {
+        const proj = projectsState?.activeProject;
+        if (proj) renderDocumentsTab(proj.id);
+    });
+
+
+    // ═══════════════════════════════════════════════
+    // Phase 6 — Agent Confidence Panel
+    // ═══════════════════════════════════════════════
+
+    /**
+     * Render the confidence report grid showing each agent's self-assessment.
+     * Called when `confidence_report` SSE event arrives.
+     */
+    function renderConfidenceReport(data) {
+        const panel = document.getElementById('confidence-panel');
+        const grid = document.getElementById('confidence-grid');
+        const summaryText = document.getElementById('confidence-summary-text');
+        if (!panel || !grid) return;
+
+        // Store session id if present
+        if (data.fleet_session_id) _fleetSessionId = data.fleet_session_id;
+
+        const probes = data.probes || {};
+        const keys = Object.keys(probes);
+        const highCount = keys.filter(k => probes[k].confidence === 'high').length;
+        const medCount = keys.filter(k => probes[k].confidence === 'medium').length;
+        const lowCount = keys.filter(k => probes[k].confidence === 'low').length;
+
+        if (summaryText) {
+            summaryText.textContent = `${keys.length} agents probed — ` +
+                `${highCount} high confidence, ${medCount} medium, ${lowCount} low` +
+                (data.cross_agent_briefing_available ? ' • High-confidence agents will brief the others' : '');
+        }
+
+        // Sort: low first (they need attention), then medium, then high
+        const order = { low: 0, medium: 1, high: 2 };
+        const sorted = keys.sort((a, b) => (order[probes[a].confidence] || 1) - (order[probes[b].confidence] || 1));
+
+        grid.innerHTML = sorted.map(key => {
+            const p = probes[key];
+            const level = p.confidence || 'medium';
+            const gapsHtml = (p.gaps || []).length
+                ? `<ul class="cc-gaps">${p.gaps.slice(0, 3).map(g => `<li>${escapeHTML(g)}</li>`).join('')}</ul>`
+                : '';
+            return `
+                <div class="confidence-card">
+                    <span class="cc-emoji">${p.emoji || '🤖'}</span>
+                    <div class="cc-body">
+                        <div class="cc-name">${escapeHTML(p.name || key)}</div>
+                        <span class="cc-level cc-level--${level}">${level}</span>
+                        ${gapsHtml}
+                    </div>
+                </div>`;
+        }).join('');
+
+        panel.classList.remove('hidden');
+        updateFleetStatusMessage(`Confidence check complete — ${lowCount ? lowCount + ' agent(s) need help' : 'all agents ready'}`);
+    }
+
+    /**
+     * Show the Q&A section with questions from agents that need user input.
+     * Called when `awaiting_answers` SSE event arrives.
+     */
+    function showConfidenceQA(data) {
+        const qaSection = document.getElementById('confidence-qa');
+        const questionsList = document.getElementById('confidence-questions-list');
+        if (!qaSection || !questionsList) return;
+
+        if (data.fleet_session_id) _fleetSessionId = data.fleet_session_id;
+
+        const questions = data.questions || {};
+        const agentKeys = Object.keys(questions);
+        if (!agentKeys.length) return;
+
+        questionsList.innerHTML = agentKeys.map(key => {
+            const qs = questions[key];
+            const config = state.personaConfigs[key] || {};
+            const name = config.name || key;
+            const emoji = config.emoji || '🤖';
+
+            const qRows = qs.map((q, i) => `
+                <div class="cq-question-row">
+                    <label>${escapeHTML(q)}</label>
+                    <input type="text" data-agent="${key}" data-qi="${i}"
+                        placeholder="Your answer (leave blank to skip)">
+                </div>`).join('');
+
+            return `
+                <div class="cq-agent-block">
+                    <div class="cq-agent-block__header">
+                        <span>${emoji}</span> ${escapeHTML(name)}
+                    </div>
+                    <div class="cq-agent-block__questions">${qRows}</div>
+                </div>`;
+        }).join('');
+
+        qaSection.classList.remove('hidden');
+        updateFleetStatusMessage(`${agentKeys.length} agent(s) have questions — answer below or skip to proceed`);
+    }
+
+    /** Collect answers from the Q&A form and POST them */
+    async function submitConfidenceAnswers() {
+        if (!_fleetSessionId) return;
+
+        const answers = {};
+        document.querySelectorAll('#confidence-questions-list input[data-agent]').forEach(input => {
+            const val = input.value.trim();
+            if (!val) return;
+            const agentKey = input.getAttribute('data-agent');
+            if (!answers[agentKey]) answers[agentKey] = [];
+            answers[agentKey].push(val);
+        });
+
+        const globalAnswer = (document.getElementById('confidence-global-answer')?.value || '').trim();
+        const extraUrlsRaw = (document.getElementById('confidence-extra-urls')?.value || '').trim();
+        const extraUrls = extraUrlsRaw ? extraUrlsRaw.split('\n').map(u => u.trim()).filter(Boolean) : [];
+
+        try {
+            document.getElementById('confidence-submit-btn').disabled = true;
+            document.getElementById('confidence-skip-btn').disabled = true;
+            updateFleetStatusMessage('Submitting answers — agents will resume shortly...');
+
+            await fetch(`/api/fleet-answer/${_fleetSessionId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    answers,
+                    global_answer: globalAnswer,
+                    extra_urls: extraUrls,
+                }),
+            });
+
+            // Hide the Q&A panel after submission
+            const qaSection = document.getElementById('confidence-qa');
+            if (qaSection) qaSection.classList.add('hidden');
+            updateFleetStatusMessage('Answers received — launching fleet...');
+        } catch (e) {
+            console.error('Failed to submit confidence answers', e);
+            updateFleetStatusMessage('Error submitting answers — fleet will proceed after timeout');
+        }
+    }
+
+    /** Skip the Q&A and let agents proceed immediately */
+    async function skipConfidenceQA() {
+        if (!_fleetSessionId) return;
+        try {
+            document.getElementById('confidence-submit-btn').disabled = true;
+            document.getElementById('confidence-skip-btn').disabled = true;
+            updateFleetStatusMessage('Skipping Q&A — launching fleet...');
+
+            await fetch(`/api/fleet-skip/${_fleetSessionId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+
+            const qaSection = document.getElementById('confidence-qa');
+            if (qaSection) qaSection.classList.add('hidden');
+        } catch (e) {
+            console.error('Failed to skip confidence Q&A', e);
+        }
+    }
+
+    /** Simple HTML escaper for confidence panel text */
+    function escapeHTML(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    // Wire up confidence panel buttons
+    document.getElementById('confidence-submit-btn')?.addEventListener('click', submitConfidenceAnswers);
+    document.getElementById('confidence-skip-btn')?.addEventListener('click', skipConfidenceQA);
+
+
+    // ═══════════════════════════════════════════════
+    // Phase 7B — Specialist Agent Proposals
+    // ═══════════════════════════════════════════════
+
+    let _pendingProposals = [];
+
+    function renderSpecialistProposals(data) {
+        const panel = document.getElementById('specialist-panel');
+        const list = document.getElementById('specialist-proposals-list');
+        const summary = document.getElementById('specialist-summary-text');
+        if (!panel || !list) return;
+
+        const proposals = data.proposals || [];
+        if (!proposals.length) return;
+
+        _pendingProposals = proposals;
+
+        if (summary) {
+            summary.textContent = data.message || `${proposals.length} specialist(s) proposed`;
+        }
+
+        list.innerHTML = proposals.map((p, i) => `
+            <label class="specialist-proposal-card">
+                <input type="checkbox" data-idx="${i}" checked class="specialist-checkbox">
+                <span class="specialist-emoji">${p.emoji || '🔬'}</span>
+                <div class="specialist-info">
+                    <div class="specialist-name">${escapeHTML(p.name || p.persona_key)}</div>
+                    <div class="specialist-reason">${escapeHTML(p.reason || '')}</div>
+                    <div class="specialist-areas">
+                        ${(p.investigation_areas || []).map(a => `<span class="specialist-area-tag">${escapeHTML(a)}</span>`).join('')}
+                    </div>
+                </div>
+            </label>
+        `).join('');
+
+        panel.classList.remove('hidden');
+    }
+
+    async function approveSpecialists() {
+        const checkboxes = document.querySelectorAll('.specialist-checkbox:checked');
+        const approvedIdxs = Array.from(checkboxes).map(cb => parseInt(cb.dataset.idx));
+        const approved = approvedIdxs.map(i => _pendingProposals[i]).filter(Boolean);
+        const approvedKeys = approved.map(p => p.persona_key);
+
+        if (!approved.length) {
+            document.getElementById('specialist-panel')?.classList.add('hidden');
+            return;
+        }
+
+        const proj = projectsState?.activeProject;
+        const projectId = proj?.id;
+        if (!projectId) {
+            alert('No active project — cannot create specialists.');
+            return;
+        }
+
+        const btn = document.getElementById('specialist-approve-btn');
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ Creating specialists...'; }
+
+        try {
+            const res = await fetch('/api/approve-specialists-v2', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    proposals: approved,
+                    approved_keys: approvedKeys,
+                    project_id: projectId,
+                }),
+            });
+            const result = await res.json();
+            const created = (result.created || []).filter(c => c.status === 'created');
+
+            if (created.length) {
+                updateFleetStatusMessage(`${created.length} specialist(s) created — re-run to include them in the fleet`);
+            }
+            document.getElementById('specialist-panel')?.classList.add('hidden');
+        } catch (e) {
+            console.error('Specialist approval failed', e);
+            if (btn) { btn.disabled = false; btn.textContent = '✅ Create Selected & Re-run'; }
+        }
+    }
+
+    document.getElementById('specialist-approve-btn')?.addEventListener('click', approveSpecialists);
+    document.getElementById('specialist-dismiss-btn')?.addEventListener('click', () => {
+        document.getElementById('specialist-panel')?.classList.add('hidden');
+        _pendingProposals = [];
     });
 
 

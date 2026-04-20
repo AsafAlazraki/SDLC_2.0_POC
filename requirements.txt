@@ -8,3 +8,7 @@ httpx
 sse-starlette
 python-dotenv
 anthropic
+trafilatura
+pyyaml
+pypdf
+python-docx
