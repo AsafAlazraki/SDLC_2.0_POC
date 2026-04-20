@@ -296,6 +296,18 @@ ANTHROPIC_LAUNCH_STAGGER = 4            # seconds between successive Claude agen
 
 Both `run_single_agent` and `run_synthesis_agent` have this retry logic.
 
+### Bidirectional Model Fallback (Demo / Partial-Key Robustness)
+
+The engine never hard-requires both keys. Three independent fallback paths keep the fleet running on whatever you have:
+
+1. **Per-call fallback** (mid-execution): if a Gemini call raises any exception inside `call_gemini()`, it transparently retries on Anthropic with the same prompt (minus live grounding). The reverse exists too — Claude rate-limit/overload exhaustion falls back to Gemini.
+
+2. **Up-front routing short-circuit**: at the top of `run_single_agent()` and `run_confidence_probe()`, if `model_type == "gemini"` and `gemini_api_key == ""` and `anthropic_api_key` is set, the agent is re-routed to Anthropic immediately — no doomed API call, no noisy status message. Same logic in reverse for Anthropic-typed agents missing their key.
+
+3. **Optional-feature graceful skip**: recon pre-pass, living docs generation, specialist Flash drafting, image vision, and audio transcription all wrap their Gemini calls in `try/except` and skip silently when no key is available — these enrich the run but never block it.
+
+**Demo implication**: with only an Anthropic key, all 18 agents and synthesis run on Claude. The fleet is fully usable; you lose live Google Search grounding (Gemini-only) and the optional Gemini-Flash enrichment features (recon, living docs, image vision, audio). Cost goes up because everything is Sonnet-priced instead of Flash-priced for the optional bits, but core analysis quality is preserved.
+
 ### Research Mandate System
 
 Injected at runtime into every agent's prompt in `run_single_agent`:

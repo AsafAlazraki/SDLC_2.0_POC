@@ -1763,6 +1763,20 @@ async def run_single_agent(
     config = PERSONA_CONFIGS[persona_key]
     model_type = config.get("model", "gemini")
 
+    # Bidirectional model fallback for partial-key scenarios (demo / dev):
+    # - Gemini agent + no Gemini key + Anthropic key present → route to Anthropic
+    # - Anthropic agent + no Anthropic key + Gemini key present → route to Gemini
+    # The reverse-direction fallbacks already exist mid-call (call_gemini()
+    # falls back to Anthropic on Gemini failure; the Anthropic retry loop falls
+    # back to Gemini when Claude rate-limits). This short-circuit just avoids a
+    # doomed API call we know will 401.
+    if model_type == "gemini" and not gemini_api_key and anthropic_api_key:
+        model_type = "anthropic"
+        logger.info(f"[{persona_key}] No Gemini key — routing to Anthropic.")
+    elif model_type == "anthropic" and not anthropic_api_key and gemini_api_key:
+        model_type = "gemini"
+        logger.info(f"[{persona_key}] No Anthropic key — routing to Gemini.")
+
     async def update_status(msg: str):
         if status_callback:
             await status_callback(persona_key, "thinking", msg)
@@ -2344,6 +2358,13 @@ async def run_confidence_probe(
     """
     config = PERSONA_CONFIGS[persona_key]
     model_type = config.get("model", "gemini")
+
+    # Same bidirectional short-circuit as run_single_agent: don't waste a
+    # doomed API call when we know one provider's key is missing.
+    if model_type == "gemini" and not gemini_api_key and anthropic_api_key:
+        model_type = "anthropic"
+    elif model_type == "anthropic" and not anthropic_api_key and gemini_api_key:
+        model_type = "gemini"
 
     # Build a truncated context sample — probes don't need the full codebase.
     # 15K chars ≈ 4K tokens — enough to assess the stack, not enough to rack up cost.
