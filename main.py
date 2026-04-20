@@ -333,6 +333,21 @@ def api_list_custom_agents(project_id: int):
     ]
 
 
+@app.get("/api/projects/{project_id}/agent-effectiveness")
+def api_agent_effectiveness(project_id: int):
+    """Phase 10: per-custom-agent effectiveness history.
+
+    Returns each custom agent's run count, average effectiveness (0-100),
+    latest score, and a rolling history of up to 10 most recent scores.
+    Sorted by avg_effectiveness descending.
+
+    Useful for: deciding whether to retire a low-performing specialist,
+    comparing specialists across runs, surfacing high performers as borrow
+    candidates for sibling projects.
+    """
+    return database.get_custom_agent_effectiveness(project_id)
+
+
 @app.get("/api/borrowable-agents")
 def api_borrowable_agents(exclude_project_id: Optional[int] = None):
     """List all custom agents across projects that can be borrowed."""
@@ -1028,6 +1043,8 @@ async def analyze_repo(request: RepoAnalysisRequest):
                     _fleet_sessions[fleet_session_id]["existing_custom_keys"] = [
                         a.get("persona_key") for a in custom_agents_for_run if a.get("persona_key")
                     ]
+                    # Phase 10: project_id for effectiveness scoring persistence
+                    _fleet_sessions[fleet_session_id]["project_id"] = pid_for_agents
                     if custom_agents_for_run:
                         yield {
                             "event": "status",
@@ -1353,6 +1370,8 @@ async def analyze_topic(request: TopicAnalysisRequest):
                     _fleet_sessions[fleet_session_id]["existing_custom_keys"] = [
                         a.get("persona_key") for a in custom_agents_for_run if a.get("persona_key")
                     ]
+                    # Phase 10: project_id for effectiveness scoring persistence
+                    _fleet_sessions[fleet_session_id]["project_id"] = pid_for_agents
                     if custom_agents_for_run:
                         yield {
                             "event": "status",

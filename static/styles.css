@@ -1612,6 +1612,8 @@ nav {
 .opus-event code { background: rgba(189,0,255,0.12); color: #d966ff; }
 .flag-event { background: rgba(255,87,34,0.06); border-color: rgba(255,87,34,0.4); }
 .flag-event code { background: rgba(255,87,34,0.14); color: #ff7043; }
+.eff-event { background: rgba(0,242,255,0.04); border-color: rgba(0,242,255,0.3); }
+.eff-event code { background: rgba(0,242,255,0.12); color: var(--primary); }
 @media (max-width: 700px) { .hiw-sse-diagram { flex-direction: column; } .hiw-sse-arrow { align-self: center; transform: rotate(90deg); } }
 
 /* Tech grid */
@@ -4277,3 +4279,170 @@ nav {
     border-color: rgba(0, 255, 163, 0.4) !important;
     color: #00ffa3 !important;
 }
+
+/* ─────────────────────────────────────────────
+   Phase 10 — Agent Effectiveness Scoring
+   Two surfaces: per-card badge on every report header, and a custom
+   agent scorecard panel that surfaces between flag resolutions and
+   the synthesis card.
+   ───────────────────────────────────────────── */
+
+/* Per-card effectiveness badge */
+.eff-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px 3px 6px;
+    margin: 0 8px;
+    border-radius: 12px;
+    font-size: 0.7rem;
+    font-family: 'Space Grotesk', sans-serif;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    cursor: help;
+    flex-shrink: 0;
+}
+.eff-badge-num {
+    display: inline-block;
+    min-width: 20px;
+    text-align: center;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-weight: 600;
+    background: rgba(255, 255, 255, 0.1);
+}
+.eff-badge-label { color: var(--text-muted); white-space: nowrap; }
+.eff-badge--high {
+    background: rgba(0, 255, 163, 0.08);
+    border-color: rgba(0, 255, 163, 0.3);
+}
+.eff-badge--high .eff-badge-num { background: rgba(0, 255, 163, 0.25); color: #00ffa3; }
+.eff-badge--medium {
+    background: rgba(0, 242, 255, 0.06);
+    border-color: rgba(0, 242, 255, 0.25);
+}
+.eff-badge--medium .eff-badge-num { background: rgba(0, 242, 255, 0.2); color: var(--primary); }
+.eff-badge--low {
+    background: rgba(255, 170, 0, 0.06);
+    border-color: rgba(255, 170, 0, 0.25);
+}
+.eff-badge--low .eff-badge-num { background: rgba(255, 170, 0, 0.2); color: var(--warning); }
+.eff-badge--absent {
+    background: rgba(120, 120, 120, 0.08);
+    border-color: rgba(255, 255, 255, 0.08);
+    opacity: 0.7;
+}
+.eff-badge--absent .eff-badge-num { background: rgba(180, 180, 180, 0.15); color: #999; }
+
+/* Custom agent scorecard panel */
+.custom-agent-scorecard {
+    margin: 24px 0;
+    padding: 24px 28px;
+    border-radius: 14px;
+    background: linear-gradient(135deg,
+        rgba(0, 242, 255, 0.04) 0%,
+        rgba(189, 0, 255, 0.04) 100%);
+    border: 1px solid rgba(0, 242, 255, 0.2);
+    animation: fadeIn 0.4s ease-out;
+}
+.cas-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+.cas-icon { font-size: 1.7rem; line-height: 1; }
+.cas-header h3 {
+    margin: 0;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 1.05rem;
+    color: var(--primary);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+.cas-total {
+    margin-left: auto;
+    font-size: 0.78rem;
+    padding: 4px 12px;
+    background: rgba(0, 242, 255, 0.12);
+    border: 1px solid rgba(0, 242, 255, 0.3);
+    color: var(--primary);
+    border-radius: 12px;
+    font-family: 'Space Grotesk', sans-serif;
+}
+.cas-intro {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin: 0 0 18px 0;
+    line-height: 1.5;
+}
+.cas-intro em { color: var(--primary); font-style: normal; font-weight: 600; }
+.cas-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 14px;
+}
+.cas-card {
+    padding: 14px 16px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.cas-card--high   { border-color: rgba(0, 255, 163, 0.3); }
+.cas-card--medium { border-color: rgba(0, 242, 255, 0.25); }
+.cas-card--low    { border-color: rgba(255, 170, 0, 0.25); }
+.cas-card--absent { opacity: 0.65; }
+.cas-card-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+.cas-emoji { font-size: 1.3rem; line-height: 1; }
+.cas-card-head strong {
+    flex: 1;
+    font-size: 0.92rem;
+    font-family: 'Space Grotesk', sans-serif;
+    color: var(--text-main);
+}
+.cas-norm {
+    min-width: 36px;
+    text-align: center;
+    padding: 3px 10px;
+    border-radius: 10px;
+    font-weight: 600;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-main);
+    font-family: 'Space Grotesk', sans-serif;
+}
+.cas-card--high   .cas-norm { background: rgba(0, 255, 163, 0.2); color: #00ffa3; }
+.cas-card--medium .cas-norm { background: rgba(0, 242, 255, 0.18); color: var(--primary); }
+.cas-card--low    .cas-norm { background: rgba(255, 170, 0, 0.18); color: var(--warning); }
+.cas-meta {
+    display: flex;
+    gap: 8px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+    font-family: 'Space Grotesk', sans-serif;
+    flex-wrap: wrap;
+}
+.cas-verdict-high   { color: #00ffa3; font-weight: 600; }
+.cas-verdict-medium { color: var(--primary); font-weight: 600; }
+.cas-verdict-low    { color: var(--warning); font-weight: 600; }
+.cas-verdict-absent { color: #999; font-weight: 600; }
+.cas-sections {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+.cas-section-tag {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-muted);
+    font-family: 'Space Grotesk', sans-serif;
+}
+.cas-empty { font-size: 0.78rem; color: #888; font-style: italic; }

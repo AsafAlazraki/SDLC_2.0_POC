@@ -12,6 +12,26 @@ CLAUDE.md is the **architecture spec** — what the system *is* now. This file i
 
 ## Architecture Learnings
 
+### Agent effectiveness: answering "is this specialist pulling weight?" (Phase 10)
+
+One of the oldest open questions in LEARNINGS.md was "we don't know if spawned specialists are actually pulling weight." Phase 10 closes that loop with a simple scoring function that turns out to be surprisingly rich.
+
+The core insight: **synthesis is a de facto peer review.** When the verdict cites an agent in Consensus (3+ agents agreed with them), in Critical Path actions, or as the source of a resolved flag, that's signal the agent contributed real value. When synthesis doesn't mention them at all, they probably duplicated others or covered ground that didn't matter for this codebase.
+
+Lessons learned building it:
+
+1. **Section weights matter more than citation count.** First version just counted mentions across the whole synthesis. Result: QA Lead and Tech Lead always topped the list because they get mentioned everywhere incidentally. Weighting by section (Consensus ×5, Blind Spots ×−1 as a *penalty*) surfaced the actual contributors.
+
+2. **Normalise to relative, not absolute.** Raw scores are hard to interpret ("27.0 points? good? bad?"). Normalising 0-100 against the top agent in this run gives users a relative scale they can read at a glance. The top agent is always 100, so the question becomes "how close to the top did each agent land?"
+
+3. **Name matching is fiddly.** Synthesis abbreviates. "The Security Engineer recommends..." becomes "Security warns..." in the next paragraph. Matching requires (a) full canonical name, (b) first word (capitalised) as fallback, (c) persona_key as last resort. Word boundaries everywhere to avoid substring noise.
+
+4. **Zero-cost features still need persistence.** Scoring itself is free (regex), but the value compounds over runs. Storing `effectiveness_history[]` on each custom agent's `structured_data` means a specialist's track record accumulates — which unlocks "show me our MLOps specialist's last 10 runs" without any new tables or migrations.
+
+5. **Penalties matter.** Adding `blind_spots: −1.0` was the difference between "everyone looks fine" and "Security and Compliance genuinely missed stuff this run." Negative signals change the tool's usefulness from "pat on the back" to "honest debrief."
+
+Surprise: I expected the score distribution to cluster around 40-60 across a run. Actual distribution in my test runs was heavily bimodal — 2-3 agents score 70+, most score under 15. This matches reality: typical runs have 3-5 agents doing real work and 10+ covering edge cases that didn't trigger on this codebase. That bimodal shape is the signal, not noise.
+
 ### Closed-loop UX: parsing structured output back from synthesis (Phase 9 polish)
 
 After Phase 9 routed flags into synthesis, the user only saw flags going in — they had to read the verdict to find the resolutions. Closing the loop meant parsing structured output back from a free-text LLM response, which is fragile by default.
@@ -282,7 +302,7 @@ CLAUDE.md tracks current state. This file tracks alternatives considered. Both m
 ## Things to Watch For (Open Questions)
 
 - **When does episodic memory bloat?** Currently capped at last 5 runs + agent findings truncated to 2K chars. At what point does this become noise rather than signal? Probably need a "compaction" pass that consolidates old runs into living docs only.
-- **Custom agent quality drift.** We've never reviewed a created specialist after the fact to see if it's actually adding value. Need a "specialist effectiveness" metric — maybe based on how often its findings appear in synthesis consensus.
+- ~~**Custom agent quality drift.** We've never reviewed a created specialist after the fact to see if it's actually adding value.~~ ✅ **Addressed in Phase 10** — `compute_agent_effectiveness()` scores every agent 0-100 based on weighted citation count in synthesis sections; custom agents get rolling history persisted to `structured_data.effectiveness_history` on their `project_artifacts` row. Historical scores available via `GET /api/projects/{id}/agent-effectiveness`.
 - **Cross-project agent borrowing UX.** Currently surfaced via `/api/borrowable-agents` but no automatic recommendation. When should the system say "Project A has a GraphQL Specialist that would help here"?
 - **Document size limits.** Living docs grow over time. At what size do they need to be paginated, archived, or summarised? Probably not soon, but worth watching.
 - **Confidence pre-flight latency.** 18 fast probes still adds 30-60s before the main fleet launches. Acceptable when probes catch real gaps; annoying when they don't. Worth measuring "probe-led improvements" vs "probe overhead" over time.

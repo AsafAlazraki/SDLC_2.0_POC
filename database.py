@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from pydantic import BaseModel
@@ -895,6 +896,84 @@ def create_custom_agent(
             "run_count": 0,
         },
     ))
+
+
+def record_custom_agent_effectiveness(
+    project_id: int,
+    persona_key: str,
+    score: dict,
+    *,
+    history_cap: int = 10,
+) -> Optional[dict]:
+    """Append an effectiveness score to a custom agent's rolling history.
+
+    Mutates the agent's structured_data in place:
+      - Appends the score to `effectiveness_history` (capped at history_cap entries)
+      - Updates `latest_effectiveness` to the most recent score
+      - Updates `avg_effectiveness` (mean of normalised across history)
+      - Increments `run_count` (cheaper than a separate counter)
+
+    Silent failure — effectiveness tracking is nice-to-have, not load-bearing.
+    Returns the updated artifact row or None on failure.
+    """
+    try:
+        row = get_custom_agent(project_id, persona_key)
+        if not row:
+            return None
+        sd = dict(row.get("structured_data") or {})
+        history = list(sd.get("effectiveness_history") or [])
+        # Slim down the score we store — sections breakdown is the largest field
+        # and we don't need it on every history entry.
+        slim = {
+            "normalised": score.get("normalised", 0),
+            "raw_score": score.get("raw_score", 0.0),
+            "verdict": score.get("verdict", "absent"),
+            "section_breakdown": score.get("section_breakdown", {}),
+            "recorded_at": datetime.utcnow().isoformat() + "Z",
+        }
+        history.append(slim)
+        # Cap to the most recent N entries
+        history = history[-history_cap:]
+        # Compute rolling mean of normalised
+        if history:
+            mean = sum(h.get("normalised", 0) for h in history) / len(history)
+            sd["avg_effectiveness"] = round(mean, 1)
+        sd["latest_effectiveness"] = slim
+        sd["effectiveness_history"] = history
+        sd["run_count"] = (sd.get("run_count") or 0) + 1
+        return update_project_artifact(row["id"], {"structured_data": sd})
+    except Exception as e:
+        print(f"record_custom_agent_effectiveness error: {e}")
+        return None
+
+
+def get_custom_agent_effectiveness(project_id: int) -> List[dict]:
+    """Return a compact effectiveness summary for every custom agent on the project.
+
+    Each entry: {persona_key, name, emoji, run_count, avg_effectiveness,
+                 latest, history}
+    Sorted by avg_effectiveness desc.
+    """
+    rows = list_custom_agents(project_id)
+    out = []
+    for row in rows:
+        sd = row.get("structured_data") or {}
+        out.append({
+            "persona_key": row.get("persona_key"),
+            "name": sd.get("name") or row.get("title"),
+            "emoji": sd.get("emoji", "🔬"),
+            "run_count": sd.get("run_count", 0),
+            "avg_effectiveness": sd.get("avg_effectiveness"),
+            "latest": sd.get("latest_effectiveness"),
+            "history": sd.get("effectiveness_history", []),
+            "spawned_at": row.get("created_at"),
+            "reason": sd.get("reason", ""),
+        })
+    out.sort(
+        key=lambda r: (r["avg_effectiveness"] if r["avg_effectiveness"] is not None else -1),
+        reverse=True,
+    )
+    return out
 
 
 def find_borrowable_agents(exclude_project_id: Optional[int] = None) -> List[dict]:

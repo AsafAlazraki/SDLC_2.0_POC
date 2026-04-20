@@ -492,6 +492,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateFleetStatusMessage(msg);
             }
 
+            // Phase 10 — per-agent effectiveness scoring
+            if (eventType === 'agent_effectiveness') {
+                state.agentEffectiveness = data.scores || [];
+                renderAgentEffectiveness(data);
+                if (data.top_agent) {
+                    const t = data.top_agent;
+                    console.log(`[effectiveness] top: ${t.name} norm=${t.normalised} (${data.absent_count} absent)`);
+                }
+            }
+
             // Phase 5 — live cost display when a run finishes.
             if (eventType === 'usage_summary') {
                 state.lastUsageSummary = data;
@@ -872,6 +882,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (cdfPanel) cdfPanel.style.display = 'none';
         state.crossDomainFlags = [];
         state.flagResolutions = [];
+        // Reset specialist scorecard (Phase 10)
+        const casPanel = document.getElementById('custom-agent-scorecard');
+        if (casPanel) casPanel.style.display = 'none';
+        state.agentEffectiveness = [];
+        // Strip any effectiveness badges from previous run's report cards
+        document.querySelectorAll('.eff-badge').forEach(el => el.remove());
         _fleetSessionId = null;
         updateFleetStatusMessage('');
         state.reportContents = {};
@@ -3946,6 +3962,112 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
             <p class="cdf-intro">${intro}</p>
             <div class="cdf-groups">${groups}</div>
+        `;
+    }
+
+    // ═══════════════════════════════════════════════
+    // Phase 10 — Agent Effectiveness renderer
+    // After synthesis we know how much the verdict leaned on each agent.
+    // Surface as a small badge on every report card header, plus a
+    // dedicated "specialist scorecard" panel for custom agents.
+    // ═══════════════════════════════════════════════
+
+    function renderAgentEffectiveness(data) {
+        const scores = (data && data.scores) || [];
+        if (!scores.length) return;
+
+        // 1. Per-card badges — tag every agent's report card header.
+        scores.forEach(s => {
+            const card = document.getElementById(`report-${s.persona}`);
+            if (!card) return;
+            const header = card.querySelector('.report-card-header');
+            if (!header) return;
+
+            // Remove any previous badge from a re-render.
+            const existing = header.querySelector('.eff-badge');
+            if (existing) existing.remove();
+
+            const badge = document.createElement('span');
+            badge.className = `eff-badge eff-badge--${s.verdict}`;
+            badge.title = (
+                `Effectiveness: ${s.normalised}/100 (${s.verdict})\n` +
+                `Raw weighted citations: ${s.raw_score}\n` +
+                `Cited in: ${Object.keys(s.section_breakdown || {}).join(', ') || 'none'}`
+            );
+            const verdictLabel = {
+                high:   '★★★ Heavy weight',
+                medium: '★★ Solid contribution',
+                low:    '★ Light cite',
+                absent: '○ Not cited',
+            }[s.verdict] || s.verdict;
+            badge.innerHTML = `<span class="eff-badge-num">${s.normalised}</span><span class="eff-badge-label">${verdictLabel}</span>`;
+            // Insert near the start of the header (after icon if present).
+            const titleEl = header.querySelector('.persona-title') || header.firstChild;
+            header.insertBefore(badge, titleEl?.nextSibling || header.firstChild);
+        });
+
+        // 2. Custom agent scorecard panel — only render if there are customs.
+        const customs = scores.filter(s => s.is_custom);
+        if (!customs.length) {
+            const existing = document.getElementById('custom-agent-scorecard');
+            if (existing) existing.style.display = 'none';
+            return;
+        }
+
+        let panel = document.getElementById('custom-agent-scorecard');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 'custom-agent-scorecard';
+            panel.className = 'custom-agent-scorecard glass-card fade-in';
+            // Insert after the cross-domain flags panel if present, otherwise
+            // before the synthesis card.
+            const dashboard = document.getElementById('dashboard') || document.querySelector('.dashboard') || document.body;
+            const cdfPanel = document.getElementById('cross-domain-flags-panel');
+            const synthCard = document.getElementById('report-synthesis');
+            if (cdfPanel && cdfPanel.parentNode === dashboard) {
+                dashboard.insertBefore(panel, cdfPanel.nextSibling);
+            } else if (synthCard && synthCard.parentNode === dashboard) {
+                dashboard.insertBefore(panel, synthCard);
+            } else {
+                dashboard.appendChild(panel);
+            }
+        }
+        panel.style.display = 'block';
+
+        const cards = customs.map(s => `
+            <div class="cas-card cas-card--${s.verdict}">
+                <div class="cas-card-head">
+                    <span class="cas-emoji">${s.emoji || '🔬'}</span>
+                    <strong>${escapeHTML(s.name)}</strong>
+                    <span class="cas-norm">${s.normalised}</span>
+                </div>
+                <div class="cas-meta">
+                    <span class="cas-verdict-${s.verdict}">${(s.verdict || '').toUpperCase()}</span>
+                    <span>·</span>
+                    <span>raw ${s.raw_score}</span>
+                    <span>·</span>
+                    <span>${Object.keys(s.section_breakdown || {}).length} section(s)</span>
+                </div>
+                <div class="cas-sections">
+                    ${Object.entries(s.section_breakdown || {}).map(([sec, n]) =>
+                        `<span class="cas-section-tag">${sec.replace(/_/g, ' ')} ×${n}</span>`
+                    ).join('') || '<span class="cas-empty">(no citations in synthesis)</span>'}
+                </div>
+            </div>
+        `).join('');
+
+        panel.innerHTML = `
+            <div class="cas-header">
+                <span class="cas-icon">📊</span>
+                <h3>Specialist Scorecard</h3>
+                <span class="cas-total">${customs.length} custom agent(s) on this run</span>
+            </div>
+            <p class="cas-intro">
+                How much did synthesis lean on each spawned specialist? Scores are <em>relative
+                to the top agent</em> in this run. Agents below 10 weren't cited — consider whether they
+                covered the right ground for this codebase.
+            </p>
+            <div class="cas-grid">${cards}</div>
         `;
     }
 

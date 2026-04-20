@@ -2923,6 +2923,211 @@ def parse_flag_resolutions(
 
 
 # ═══════════════════════════════════════════════════════════════
+# Phase 10 — Agent Effectiveness Scoring
+# ═══════════════════════════════════════════════════════════════
+#
+# After synthesis we score how much the verdict actually leaned on each
+# agent. The hypothesis: an agent whose findings dominate Consensus, who
+# raises productive flags, and who appears in Critical Path actions is
+# pulling weight. An agent who is barely cited is either redundant with
+# others, or covered a domain that didn't matter for THIS codebase.
+#
+# Critically, this answers an open question from LEARNINGS.md about
+# Phase 7B (dynamic agent spawning): "We don't know if spawned specialists
+# are pulling weight in synthesis consensus." Effectiveness scoring gives
+# us that signal — and persisted across runs, it tells us whether a custom
+# specialist deserves to keep their seat on the fleet.
+#
+# Scoring is deliberately simple: weighted citation count of agent name
+# in scored sections of the synthesis. No LLM call. Pure regex + section
+# parsing. Score is normalised to 0-100 across the fleet so it's relative
+# (the top agent is always 100).
+
+# Section weights — how much a citation in each section is worth.
+# Higher weight = more strategic significance.
+_EFFECTIVENESS_SECTION_WEIGHTS = {
+    "consensus":             5.0,   # Findings 3+ agents agreed on
+    "contradictions":        3.0,   # Agent was party to a contradiction
+    "flag_resolutions":      4.0,   # Their flag got resolved
+    "critical_path":         3.0,   # Action attributed to them
+    "risks":                 2.0,   # Listed in Top 10 Risks
+    "quick_wins":            2.0,   # Quick win attributed
+    "blind_spots":          -1.0,   # Penalty: synthesis flagged them as having missed something
+    "executive":             4.0,   # Cited in Exec Summary (rare, high signal)
+    "paths":                 1.0,   # Mention in PATH A/B/C sections
+    "general":               1.0,   # Anywhere else in synthesis
+}
+
+# Identify each scored section by its header. Order matters because we
+# scan the synthesis sequentially.
+_SECTION_HEADERS = [
+    ("executive",        re.compile(r"^#{2,4}\s*Executive\s+Summary", re.IGNORECASE | re.MULTILINE)),
+    ("consensus",        re.compile(r"^#{2,4}\s*Consensus\s+Findings", re.IGNORECASE | re.MULTILINE)),
+    ("contradictions",   re.compile(r"^#{2,4}\s*Cross[-\s]Agent\s+Contradictions", re.IGNORECASE | re.MULTILINE)),
+    ("flag_resolutions", re.compile(r"^#{2,4}\s*Cross[-\s]Domain\s+Flag\s+Resolutions?", re.IGNORECASE | re.MULTILINE)),
+    ("blind_spots",      re.compile(r"^#{2,4}\s*Blind\s+Spots", re.IGNORECASE | re.MULTILINE)),
+    ("paths",            re.compile(r"^#{2,4}\s*Three\s+Strategic\s+Paths", re.IGNORECASE | re.MULTILINE)),
+    ("critical_path",    re.compile(r"^#{2,4}\s*(?:The\s+)?Critical\s+Path", re.IGNORECASE | re.MULTILINE)),
+    ("risks",            re.compile(r"^#{2,4}\s*Consolidated\s+Risk\s+Register|Top\s+10\s+Risks", re.IGNORECASE | re.MULTILINE)),
+    ("quick_wins",       re.compile(r"^#{2,4}\s*Quick\s+Wins", re.IGNORECASE | re.MULTILINE)),
+]
+
+
+def _split_synthesis_into_sections(synthesis_content: str) -> Dict[str, str]:
+    """Carve a synthesis report into the named sections we score against.
+
+    Returns dict {section_name: section_text}. Anything outside known
+    sections is collected under "general".
+    """
+    if not synthesis_content:
+        return {"general": ""}
+
+    # Find every section header and its position. Sort by start.
+    matches = []
+    for name, pattern in _SECTION_HEADERS:
+        for m in pattern.finditer(synthesis_content):
+            matches.append((m.start(), name, m.end()))
+    matches.sort()
+
+    sections: Dict[str, str] = {}
+    if not matches:
+        sections["general"] = synthesis_content
+        return sections
+
+    # Everything before the first matched header counts as general
+    if matches[0][0] > 0:
+        sections["general"] = sections.get("general", "") + synthesis_content[: matches[0][0]]
+
+    for i, (start, name, body_start) in enumerate(matches):
+        end = matches[i + 1][0] if i + 1 < len(matches) else len(synthesis_content)
+        body = synthesis_content[body_start:end]
+        # Multiple matches with the same name (rare) — concat
+        sections[name] = sections.get(name, "") + body
+
+    return sections
+
+
+def _build_agent_lookup(persona_configs: Dict[str, Dict]) -> Dict[str, List[re.Pattern]]:
+    """For each agent key, build a list of regex patterns matching its name
+    in synthesis text. We match the full canonical name AND a couple of
+    common short forms (first word of the name, plus the persona key).
+
+    Patterns use word boundaries to avoid matching substrings.
+    """
+    lookup: Dict[str, List[re.Pattern]] = {}
+    for key, cfg in (persona_configs or {}).items():
+        name = (cfg.get("name") or "").strip()
+        patterns: List[re.Pattern] = []
+        if name:
+            # Full name (case-insensitive)
+            esc = re.escape(name)
+            patterns.append(re.compile(rf"\b{esc}\b", re.IGNORECASE))
+            # Some agents are commonly referenced by the first word ("Architect",
+            # "Security", "QA"). Only register first-word patterns longer than 2
+            # chars to avoid noise.
+            first = name.split()[0] if name else ""
+            if first and len(first) > 2 and first.lower() != name.lower():
+                # First word is more ambiguous — require capitalisation in
+                # synthesis context (synthesis mostly uses capitalised role names).
+                patterns.append(re.compile(rf"\b{re.escape(first)}\b"))
+        # Persona key as fallback (e.g. "tech_lead" rare in synthesis but possible)
+        patterns.append(re.compile(rf"\b{re.escape(key)}\b", re.IGNORECASE))
+        lookup[key] = patterns
+    return lookup
+
+
+def compute_agent_effectiveness(
+    synthesis_content: str,
+    collected_results: Dict[str, str],
+    persona_configs: Dict[str, Dict],
+    custom_agent_keys: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Score how much synthesis leaned on each agent.
+
+    Returns a list sorted by raw_score descending. Each entry:
+        {
+          "persona": "security",
+          "name": "Security Engineer",
+          "emoji": "🔒",
+          "is_custom": False,
+          "raw_score": 27.0,           # weighted citation total
+          "normalised": 87,            # 0-100 relative to top agent
+          "section_breakdown": {
+              "consensus": 4,          # citation count (not weighted)
+              "contradictions": 1,
+              "flag_resolutions": 2,
+              ...
+          },
+          "report_chars": 18432,       # length of agent's own report
+          "verdict": "high|medium|low|absent"
+        }
+
+    `verdict` is a coarse label: high (normalised >=70), medium (40-69),
+    low (10-39), absent (<10). Used for UI badging.
+
+    No API call. Pure regex + section scan. Runs in <50ms even for big
+    synthesis reports.
+    """
+    if not synthesis_content or not persona_configs:
+        return []
+
+    sections = _split_synthesis_into_sections(synthesis_content)
+    lookup = _build_agent_lookup(persona_configs)
+    custom_keys = set(custom_agent_keys or [])
+
+    scored: List[Dict[str, Any]] = []
+    for key, cfg in persona_configs.items():
+        # Don't score the synthesis agent against its own output.
+        if key == "synthesis":
+            continue
+
+        section_counts: Dict[str, int] = {}
+        raw_score = 0.0
+        for section_name, section_text in sections.items():
+            if not section_text:
+                continue
+            count = 0
+            for pattern in lookup.get(key, []):
+                count += len(pattern.findall(section_text))
+            if count == 0:
+                continue
+            section_counts[section_name] = count
+            weight = _EFFECTIVENESS_SECTION_WEIGHTS.get(section_name, 1.0)
+            raw_score += weight * count
+
+        scored.append({
+            "persona": key,
+            "name": cfg.get("name", key),
+            "emoji": cfg.get("emoji", "🤖"),
+            "is_custom": key in custom_keys,
+            "raw_score": round(raw_score, 2),
+            "section_breakdown": section_counts,
+            "report_chars": len((collected_results or {}).get(key, "") or ""),
+        })
+
+    if not scored:
+        return scored
+
+    # Normalise to 0-100 against the top agent so the user gets a relative scale.
+    max_score = max(s["raw_score"] for s in scored) or 1.0
+    for s in scored:
+        s["normalised"] = int(round(100 * s["raw_score"] / max_score))
+        n = s["normalised"]
+        if n >= 70:
+            s["verdict"] = "high"
+        elif n >= 40:
+            s["verdict"] = "medium"
+        elif n >= 10:
+            s["verdict"] = "low"
+        else:
+            s["verdict"] = "absent"
+
+    # Sort by raw_score descending for display.
+    scored.sort(key=lambda s: s["raw_score"], reverse=True)
+    return scored
+
+
+# ═══════════════════════════════════════════════════════════════
 # Phase 7 — Episodic Memory & Post-Run Documentation
 # ═══════════════════════════════════════════════════════════════
 
@@ -3954,6 +4159,54 @@ async def run_agent_fleet(
             }
         except Exception as e:
             logger.warning(f"flag resolution parsing failed: {e}")
+
+    # ── Phase 10: Agent effectiveness scoring ──────────────────────────────
+    # Score every agent on how much synthesis leaned on them. Custom agents
+    # (spawned via Phase 7B) get persisted scores so we can answer: "is this
+    # specialist actually pulling weight, or should we retire them?"
+    if synthesis_result.get("status") == "success":
+        try:
+            existing_custom_keys = list((answer_provider or {}).get("existing_custom_keys", []))
+            # merged_configs already includes custom agents (Phase 7B);
+            # if no customs were merged it just equals PERSONA_CONFIGS.
+            effectiveness = compute_agent_effectiveness(
+                synthesis_result.get("content", ""),
+                collected_results,
+                merged_configs,
+                custom_agent_keys=existing_custom_keys,
+            )
+            yield {
+                "event": "agent_effectiveness",
+                "data": {
+                    "scores": effectiveness,
+                    "top_agent": effectiveness[0] if effectiveness else None,
+                    "absent_count": sum(1 for s in effectiveness if s.get("verdict") == "absent"),
+                    "custom_agent_count": sum(1 for s in effectiveness if s.get("is_custom")),
+                }
+            }
+            # Persist scores for custom agents only — for the core fleet, the
+            # scores are useful but not worth schema overhead.
+            try:
+                project_id_for_persist = None
+                if isinstance(answer_provider, dict):
+                    project_id_for_persist = answer_provider.get("project_id")
+                if project_id_for_persist:
+                    custom_scores = [s for s in effectiveness if s.get("is_custom")]
+                    if custom_scores:
+                        try:
+                            import database as _db
+                            for s in custom_scores:
+                                _db.record_custom_agent_effectiveness(
+                                    project_id=project_id_for_persist,
+                                    persona_key=s["persona"],
+                                    score=s,
+                                )
+                        except Exception as e_db:
+                            logger.warning(f"effectiveness persistence failed: {e_db}")
+            except Exception as e_inner:
+                logger.warning(f"effectiveness persistence skipped: {e_inner}")
+        except Exception as e:
+            logger.warning(f"agent effectiveness scoring failed: {e}")
 
     # ── Phase 7B: Analyse for specialist gaps & propose spawning ──────────
     if confidence_gate and probe_results and collected_results:

@@ -285,6 +285,7 @@ The `/api/analyze-repo` and `/api/analyze-topic` endpoints return `EventSourceRe
 - `synthesis_escalated` — Phase 8: synthesis bumped Sonnet→Opus `{model, reason, thinking_budget, output_budget}`
 - `cross_domain_flags` — Phase 9: inter-agent flags raised before synthesis `{flags[], count, message}`
 - `flag_resolutions` — Phase 9 closed-loop: synthesis ruling + owner mapped to each flag `{resolutions[], resolved_count, total, message}`
+- `agent_effectiveness` — Phase 10: per-agent score 0-100 measuring synthesis citation weight `{scores[], top_agent, absent_count, custom_agent_count}`
 - `usage_summary` — Phase 5: aggregated token counts + cost `{total_input_tokens, total_output_tokens, total_cost_usd}`
 - `error` — error event
 
@@ -461,6 +462,30 @@ const state = {
 - When present, injected into client context: "Budget range: $75K-$250K, Timeline: 12 months"
 - Agents told to "tailor all recommendations to fit these constraints" and "flag anything that exceeds them"
 - PATH A/B/C recommendations become budget-scoped rather than generic
+
+### 19. Agent Effectiveness Scoring (Phase 10)
+- **Open question answered**: LEARNINGS.md flagged "we don't know if spawned specialists are pulling weight in synthesis consensus." Phase 10 measures this directly.
+- **Scoring function**: `compute_agent_effectiveness(synthesis_content, collected_results, persona_configs, custom_agent_keys)` in `agent_engine.py`. Pure regex + section parsing. Runs in <50ms even for big synthesis reports.
+- **What's scored**: weighted citation count of agent name in scored synthesis sections. Section weights:
+  - `consensus` ×5 (3+ agents agreed — high signal)
+  - `flag_resolutions` ×4 (their flag was resolved — Phase 9 alignment)
+  - `executive` ×4 (Exec Summary citation is rare and high-signal)
+  - `contradictions`, `critical_path` ×3
+  - `risks`, `quick_wins`, `paths` ×2
+  - `general` ×1
+  - `blind_spots` ×−1 (penalty: synthesis flagged them as having missed something)
+- **Output**: per-agent dict with `raw_score`, `normalised` (0-100 relative to top agent), `verdict` (high ≥70 / medium 40-69 / low 10-39 / absent <10), and `section_breakdown`.
+- **Name matching**: full canonical name + first word + persona_key, all word-boundaried. Tolerant of synthesis abbreviating "Security Engineer" to "Security."
+- **SSE event**: `agent_effectiveness` `{scores: [...], top_agent, absent_count, custom_agent_count}` yielded after synthesis (and after `flag_resolutions`).
+- **Persistence**: only for custom agents — `database.record_custom_agent_effectiveness(project_id, persona_key, score)` appends to a rolling `effectiveness_history` (capped at 10 entries) on the agent's `structured_data`. Updates `latest_effectiveness`, `avg_effectiveness`, `run_count`.
+- **API endpoint**: `GET /api/projects/{id}/agent-effectiveness` returns each custom agent's run count, average, latest score, and history. Sorted by avg descending.
+- **Frontend — per-card badges**: every report card header gains an `.eff-badge` chip showing the score (0-100) and a verdict label (★★★ Heavy weight / ★★ Solid contribution / ★ Light cite / ○ Not cited). Hover tooltip shows raw score + section breakdown.
+- **Frontend — custom agent scorecard**: when custom agents are on the run, a `.custom-agent-scorecard` panel appears between cross-domain flags and synthesis. Shows score, verdict, section tags per custom agent. Helps the user decide whether to retire low-performers.
+- **Cost**: zero additional API calls. Pure client-side rendering after synthesis.
+- **Use cases unlocked**:
+  - "Should I retire this specialist?" — scorecard shows avg effectiveness over the agent's lifetime
+  - "Which specialists pull weight on similar projects?" — historical scores can be compared across projects
+  - Future: auto-recommendation in the borrow flow ("Project A has an MLOps agent averaging 78 — borrow them?")
 
 ### 18. Closed-Loop Flag Resolution UX (Phase 9 polish)
 - **Problem solved**: Phase 9 routed flags into synthesis but the user only saw the flag panel — they had to manually scroll the verdict to find the resolutions section.
