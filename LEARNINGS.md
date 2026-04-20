@@ -71,6 +71,23 @@ What I learned about prompting agents to emit structured flags:
 
 Surprise: the cleanest signal that this is working will be when synthesis quality measurably improves on runs where flags were raised. We don't have that metric yet — worth adding later.
 
+### Audio transcription: stamping out the omnivorous-input gap (Phase 11)
+
+The image vision work in Phase 8b made adding audio cheap. Same Gemini SDK, same `Part.from_bytes()` pattern, same async dispatch in `extract_text_async()`. The implementation took ~30 minutes, mostly because the 8b architecture was deliberately built to absorb a second async branch.
+
+Key reuse points:
+- Same `_genai` / `_genai_types` soft-imported at module level
+- Same graceful degradation (no key / SDK missing / API error / oversized) — copy-paste with `audio` swapped for `image`
+- Same provenance header pattern (`[Audio transcript + summary: filename — mime]`) so agents reading materials know it came from a recording
+- Same metadata-only sync fallback so `extract_text()` callers (tests, batch tools) don't need changes
+
+What I changed for audio specifically:
+1. **6-section prompt instead of 5.** Audio carries time-anchored content that text/images don't — the prompt asks for speaker turns, timestamps every 2-3 minutes for long audio, and a separate "Action items / commitments" section because meetings are mostly about what people promised to do.
+2. **Larger size cap.** Images get 4 MB; audio gets 16 MB. A 15-minute MP3 at 128kbps is ~14 MB, and that's the realistic upper end of what users would attach.
+3. **Different MIME defaults.** `audio/mp3` is the safe default vs `image/png` — most uploaded audio in practice is `.mp3` from voice memos and call recordings.
+
+Lesson: **the second integration is always 10× faster than the first.** The first one (image vision) took ~90 minutes including writing graceful degradation; this one took 30 because 90% of the scaffolding was already there. When designing the next omnivorous-input addition (video, OCR, PDF-with-vision-fallback for scanned PDFs), the same template will absorb it.
+
 ### Image vision: cheap, structured, async-only (Phase 8b)
 
 Adding image vision to the materials pipeline turned out to be 90% plumbing and 10% prompt engineering.

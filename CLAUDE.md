@@ -1,6 +1,35 @@
 # SDLC Discovery Engine — AI Handover Document
 
-> **For any AI agent picking this up**: Read this fully before making any changes. This file is kept up-to-date with every edit session and contains the definitive source of truth for the project's architecture, state, and intentions.
+> **For any AI agent picking this up**: Read this fully before making any changes. This file is kept up-to-date with every edit session and contains the definitive source of truth for the project's architecture, state, and intentions. Pair-read with `LEARNINGS.md` for the rationale behind every decision.
+
+---
+
+## Build Status — Phases 1–11 shipped
+
+Every "decided but not built" item from the original 26-question architecture session is now built. The branch `claude/phase-6-7-memory-and-spawning` carries:
+
+| Phase | Capability | Status |
+|---|---|---|
+| 1–5 | Core fleet, recon, persona filtering, synthesis, prompt caching, frugal mode | ✅ Pre-existing |
+| 6 | Confidence pre-flight check + cross-agent briefing + user Q&A pause | ✅ Phase 6 |
+| 7A | Episodic memory + 6 living document types + budget-aware recommendations | ✅ Phase 7A |
+| 7B | Dynamic agent spawning (gap analysis, two-pass persona creation, persistence, borrowing) | ✅ Phase 7B |
+| 8 | Situational Opus escalation (auto-bumps synthesis to Opus when confidence is low) | ✅ Phase 8 |
+| 8b | Image vision (Gemini-vision summaries for uploaded screenshots/wireframes/diagrams) | ✅ Phase 8b |
+| 9 | Cross-domain flag routing (inter-agent communication via structured flags) | ✅ Phase 9 |
+| 9p | Closed-loop flag resolutions (synthesis rulings mapped back to original flags) | ✅ Phase 9 polish |
+| 10 | Agent effectiveness scoring (per-agent 0-100 + custom agent scorecard + persistence) | ✅ Phase 10 |
+| 11 | Audio transcription (Gemini native audio understanding for uploaded calls/memos) | ✅ Phase 11 |
+
+**Intentionally deferred** (have triggers documented in the backlog table at the bottom of this file):
+- Scheduled domain research (Layer 5) — revisit when project volume grows
+- Semantic search / pgvector — revisit when materials per project exceed ~50 entries
+- Private repo support — one-line change in `clone_github_repo()`, ship when needed
+- Video transcripts — not yet requested
+
+**Open questions** (live in `LEARNINGS.md` "Things to Watch For"):
+- Episodic memory compaction strategy when run history exceeds 5
+- Custom agent auto-recommendation in the borrow flow
 
 ---
 
@@ -463,6 +492,17 @@ const state = {
 - Agents told to "tailor all recommendations to fit these constraints" and "flag anything that exceeds them"
 - PATH A/B/C recommendations become budget-scoped rather than generic
 
+### 20. Audio Transcription via Gemini (Phase 11)
+- **Symmetry with Phase 8b image vision**: same dispatch pattern, same graceful degradation, same provenance header on output. The two together close the omnivorous input pipeline.
+- **Audio extractor**: `extract_audio_with_gemini(payload, mime, *, gemini_api_key, filename)` in `materials_extractor.py` runs Gemini 2.0 Flash on uploaded audio and returns a structured markdown summary with 6 sections: What this audio is, Transcript (with speaker turns + timestamps for >5min recordings), Key topics, Action items / commitments, Open questions, Notable quotes.
+- **Supported formats**: `.mp3`, `.wav`, `.m4a`, `.ogg`, `.flac`, `.webm`, `.aac`, `.aiff` — all natively supported by Gemini 2.0 Flash audio understanding.
+- **Hard cap**: `MAX_AUDIO_BYTES_FOR_TRANSCRIPTION = 16 MB`. Oversized files skip transcription and fall back to metadata-only.
+- **Async dispatch**: `extract_text_async()` already routed images to vision when GEMINI_API_KEY was set; now also routes audio to transcription. Audio is now the second async branch alongside image vision.
+- **Sync fallback**: `extract_text()` returns metadata-only with a hint pointing to `extract_text_async()`. Sync callers (tests, batch tools) still work without breaking.
+- **Graceful degradation**: same 3 dimensions as image vision — no Gemini key, SDK missing, API error/quota — all return cleanly with error captured in metadata.
+- **Cost**: ~$0.0001 per minute of audio at Flash rates. Effectively free for typical voice memos / short calls.
+- **Tests**: 2 dedicated tests in `test_materials_extractor.py` — sync metadata-only fallback, async without key. All 12 materials tests pass.
+
 ### 19. Agent Effectiveness Scoring (Phase 10)
 - **Open question answered**: LEARNINGS.md flagged "we don't know if spawned specialists are pulling weight in synthesis consensus." Phase 10 measures this directly.
 - **Scoring function**: `compute_agent_effectiveness(synthesis_content, collected_results, persona_configs, custom_agent_keys)` in `agent_engine.py`. Pure regex + section parsing. Runs in <50ms even for big synthesis reports.
@@ -642,7 +682,7 @@ The system implements a layered memory architecture inspired by the v2 Architect
 | ~~Report diffing~~ | ~~High~~ | ✅ **Partially done** — agents now receive previous findings and track deltas in risk register/tech debt docs |
 | Inter-agent communication mid-run | High | ✅ **Done (Phase 9)** — Cross-Domain Flag Routing. Every agent's prompt asks for an optional `## 🔥 CROSS-DOMAIN FLAGS` section listing 0-3 findings that critically affect other domains. Parsed after fleet completes, emitted as SSE event, injected into synthesis prompt as binding items. Synthesis writes a dedicated "Cross-Domain Flag Resolutions" section explicitly addressing each flag. |
 | Tier 2 artefact generation | High | **Decided** — conversational "build that" command generating code/config/docs into local project folders. Not yet implemented. |
-| Omnivorous input pipeline | Medium | **Mostly done** — PDFs (pypdf), DOCX (python-docx), .oap/zip with manifest extraction, code/text decoded as UTF-8, images via Gemini-vision summaries (Phase 8b). Audio/video transcripts still TODO. Spreadsheets handled as text/CSV. |
+| Omnivorous input pipeline | Medium | ✅ **Done (Phase 11)** — PDFs (pypdf), DOCX (python-docx), .oap/zip with manifest extraction, code/text as UTF-8, images via Gemini-vision summaries (Phase 8b), audio (mp3/wav/m4a/ogg/flac/webm/aac/aiff) via Gemini native audio understanding (Phase 11) producing transcript + topics + action items + open questions. Spreadsheets handled as text/CSV. Video transcripts deferred — request via dedicated work item if needed. |
 | Situational Opus escalation | Medium | ✅ **Done (Phase 8)** — `should_escalate_to_opus()` triggers Opus 4.6 with 16K thinking / 12K output when ≥4 agents at low confidence, ≥30% of fleet at low confidence, or zero high-confidence anchors. New SSE event `synthesis_escalated`. Frontend shows banner on synthesis card. |
 | Scheduled domain research (Layer 5) | Medium | **Deferred** — run-time research via Gemini search grounding sufficient for now. Revisit when project volume grows. |
 | Semantic search (pgvector) | Low | **Deferred** — brute-force materials injection works well up to ~20 docs. Trigger: when Layer 5 research or materials exceed 50 entries per domain. |

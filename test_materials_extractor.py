@@ -138,6 +138,28 @@ def test_image_vision_async_no_key():
     print("  [3b/8] image (async, no key)        OK")
 
 
+def test_audio_sync_metadata_only():
+    """Sync path: audio comes back metadata-only with a hint to use the async path."""
+    fake_mp3 = b"\xff\xfb\x90\x00" + b"\x00" * 200  # MP3 magic + filler
+    text, meta = mx.extract_text("call.mp3", "audio/mp3", fake_mp3)
+    assert meta["extracted"] == "audio", meta
+    assert text == ""
+    assert "extract_text_async" in meta.get("note", ""), meta
+    print("  [3d/8] audio (sync — metadata only) OK")
+
+
+def test_audio_vision_async_no_key():
+    """Async path with no Gemini key: should fall back gracefully for audio too."""
+    import asyncio
+    fake_wav = b"RIFF\x00\x00\x00\x00WAVEfmt " + b"\x00" * 200
+    text, meta = asyncio.run(
+        mx.extract_text_async("memo.wav", "audio/wav", fake_wav, gemini_api_key="")
+    )
+    assert text == "", "Without a Gemini key, async should NOT call audio transcription"
+    assert meta["extracted"] == "audio", meta
+    print("  [3e/8] audio (async, no key)        OK")
+
+
 def test_svg_routed_to_text():
     """SVGs are XML — the extractor should route them through the text path
     rather than treating them as images (Gemini-vision rejects SVGs)."""
@@ -288,6 +310,8 @@ def main() -> int:
         test_code_file,
         test_image,
         test_image_vision_async_no_key,
+        test_audio_sync_metadata_only,
+        test_audio_vision_async_no_key,
         test_svg_routed_to_text,
         test_unknown_binary,
         test_pdf_when_available,

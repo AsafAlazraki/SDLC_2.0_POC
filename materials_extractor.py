@@ -16,6 +16,8 @@ Special handling:
   - Code / text / markup: decoded as UTF-8 with replacement.
   - Images: Gemini 2.0 Flash vision generates a structured text summary when
     GEMINI_API_KEY is set. Without a key, we fall back to metadata-only.
+  - Audio (mp3/wav/m4a/ogg/flac/webm): Gemini 2.0 Flash transcribes and
+    summarises natively when GEMINI_API_KEY is set. Same graceful fallback.
 
 Hard cap: MAX_TEXT_BYTES per extracted blob to protect prompt budget.
 """
@@ -155,6 +157,97 @@ def _guess_image_mime(filename: str, mime: str) -> str:
     ext = os.path.splitext(filename or "")[1].lower()
     return IMAGE_MIME_MAP.get(ext, "image/png")
 
+
+# ─── Audio extraction (Phase 11) — symmetric to image vision ────────────────
+# Gemini 2.0 Flash supports audio inputs natively via Part.from_bytes(mime).
+# We send the audio with a structured prompt asking for a transcript +
+# summary, just like the image vision path. Cap at 16MB (Gemini docs allow
+# up to ~20MB but ~16 keeps single-file uploads safe with metadata overhead).
+
+MAX_AUDIO_BYTES_FOR_TRANSCRIPTION = 16 * 1024 * 1024
+AUDIO_MODEL = "gemini-2.0-flash"
+
+_AUDIO_PROMPT = """You are a meeting transcription analyst preparing this audio for a fleet of software analysis agents who CANNOT listen to it. Your job is to convert it into structured text they can reason against.
+
+Produce the following sections, omitting any that genuinely don't apply:
+
+### What this audio is
+One short sentence: type of recording (meeting, interview, voice memo, support call, demo walkthrough, podcast, lecture, other).
+
+### Transcript
+A faithful transcript. Identify speakers as "Speaker 1", "Speaker 2" etc. unless names are explicit. Use timestamps every 2-3 minutes if the audio is longer than 5 minutes. Quote verbatim where possible. Mark unintelligible passages as [unintelligible].
+
+### Key topics discussed
+A bulleted list of 3-8 main topics or decisions surfaced in the audio.
+
+### Action items / commitments
+Anyone who said "I will…" or who was assigned a task. Format: "Speaker N committed to X."
+
+### Open questions / unresolved
+Anything raised that did not get a clear answer or decision.
+
+### Notable quotes
+2-4 quotes that capture key positions, concerns, or decisions verbatim, with attribution.
+
+Be concise but complete. Do NOT speculate beyond what is audible. If the audio is silent, garbled, or empty, say so plainly."""
+
+
+async def extract_audio_with_gemini(
+    payload: bytes,
+    mime: str,
+    *,
+    gemini_api_key: str,
+    filename: str = "",
+) -> Tuple[str, Dict[str, Any]]:
+    """Run Gemini audio understanding on an audio file. Returns
+    (markdown_summary, metadata). Pure async, never raises.
+
+    Mirrors `extract_image_with_vision()` — same graceful-degradation
+    contract, same provenance header, same metadata-only fallback when no
+    Gemini key is available.
+    """
+    meta: Dict[str, Any] = {"audio_model": AUDIO_MODEL, "audio_bytes": len(payload)}
+
+    if not gemini_api_key:
+        meta["error"] = "no Gemini API key — audio kept as metadata only"
+        return ("", meta)
+    if _genai is None or _genai_types is None:
+        meta["error"] = "google-genai SDK not installed"
+        return ("", meta)
+    if len(payload) > MAX_AUDIO_BYTES_FOR_TRANSCRIPTION:
+        meta["error"] = f"audio too large ({len(payload):,} bytes > {MAX_AUDIO_BYTES_FOR_TRANSCRIPTION:,})"
+        return ("", meta)
+
+    try:
+        client = _genai.Client(api_key=gemini_api_key)
+        audio_part = _genai_types.Part.from_bytes(data=payload, mime_type=mime)
+        response = await client.aio.models.generate_content(
+            model=AUDIO_MODEL,
+            contents=[audio_part, _AUDIO_PROMPT],
+            config=_genai_types.GenerateContentConfig(temperature=0.2),
+        )
+        summary = (response.text or "").strip()
+        if not summary:
+            meta["error"] = "audio transcription returned empty response"
+            return ("", meta)
+        meta["extracted"] = "audio_transcription"
+        meta["summary_chars"] = len(summary)
+        header = f"[Audio transcript + summary: {filename or '(unnamed)'} — {mime}]"
+        return (f"{header}\n\n{summary}", meta)
+    except Exception as e:
+        logger.warning(f"Audio extraction failed for {filename}: {e}")
+        meta["error"] = f"audio call failed: {e}"
+        return ("", meta)
+
+
+def _guess_audio_mime(filename: str, mime: str) -> str:
+    """Pick the cleanest MIME for audio. Prefers supplied MIME, else maps
+    from extension. Defaults to audio/mp3 as the most common bet."""
+    if mime and mime.lower().startswith("audio/"):
+        return mime.lower()
+    ext = os.path.splitext(filename or "")[1].lower()
+    return AUDIO_MIME_MAP.get(ext, "audio/mp3")
+
 TEXT_EXTS = {
     ".txt", ".md", ".markdown", ".rst", ".json", ".yaml", ".yml", ".xml",
     ".csv", ".tsv", ".log", ".html", ".htm", ".sql", ".sh", ".bat", ".ps1",
@@ -165,6 +258,21 @@ TEXT_EXTS = {
 }
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+
+# Audio formats supported by Gemini 2.0 Flash audio understanding.
+# Source: https://ai.google.dev/gemini-api/docs/audio
+AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".webm", ".aac", ".aiff"}
+
+AUDIO_MIME_MAP = {
+    ".mp3":  "audio/mp3",
+    ".wav":  "audio/wav",
+    ".m4a":  "audio/m4a",
+    ".ogg":  "audio/ogg",
+    ".flac": "audio/flac",
+    ".webm": "audio/webm",
+    ".aac":  "audio/aac",
+    ".aiff": "audio/aiff",
+}
 
 # OutSystems-specific extensions we recognise even if we can't fully parse them.
 OUTSYSTEMS_BINARY_EXTS = {".oml", ".xif", ".eap"}
@@ -344,6 +452,10 @@ def extract_text(filename: str, mime: str, payload: bytes) -> Tuple[str, Dict[st
         meta["extracted"] = "image"
         meta["note"] = "Image attached — call extract_text_async() with a Gemini API key for a vision summary."
         return ("", meta)
+    if any(name.endswith(ext) for ext in AUDIO_EXTS) or mime_l.startswith("audio/"):
+        meta["extracted"] = "audio"
+        meta["note"] = "Audio attached — call extract_text_async() with a Gemini API key for a transcript + summary."
+        return ("", meta)
     if any(name.endswith(ext) for ext in TEXT_EXTS) or mime_l.startswith("text/"):
         return _decode_text(payload, meta)
 
@@ -378,14 +490,17 @@ async def extract_text_async(
     name = (filename or "").lower()
     mime_l = (mime or "").lower()
 
-    # Detect images here so we can route directly without round-tripping
-    # through extract_text() for the binary case (small efficiency win, but
-    # mostly a clarity win — vision is the only async branch).
+    # Detect images and audio here so we can route directly without
+    # round-tripping through extract_text() for these binary cases. These
+    # are the only two async branches in the extractor.
     is_image = (
         any(name.endswith(ext) for ext in IMAGE_EXTS) and not name.endswith(".svg")
     ) or (
         mime_l.startswith("image/") and mime_l != "image/svg+xml"
     )
+    is_audio = (
+        any(name.endswith(ext) for ext in AUDIO_EXTS)
+    ) or mime_l.startswith("audio/")
 
     if is_image and gemini_api_key:
         meta: Dict[str, Any] = {"original_size": len(payload), "extracted": "image"}
@@ -395,13 +510,22 @@ async def extract_text_async(
         )
         meta.update(vmeta)
         if text:
-            # Vision succeeded — promote `extracted` to image_vision so the
-            # frontend can show a different badge.
             meta["extracted"] = "image_vision"
             return (_truncate(text), meta)
-        # Vision failed (no key, too big, API error) — fall through to
-        # metadata-only path. The error reason is already on `meta`.
         meta["note"] = "Image attached; vision extraction failed — see metadata.error."
+        return ("", meta)
+
+    if is_audio and gemini_api_key:
+        meta = {"original_size": len(payload), "extracted": "audio"}
+        audio_mime = _guess_audio_mime(filename, mime)
+        text, ameta = await extract_audio_with_gemini(
+            payload, audio_mime, gemini_api_key=gemini_api_key, filename=filename,
+        )
+        meta.update(ameta)
+        if text:
+            meta["extracted"] = "audio_transcription"
+            return (_truncate(text), meta)
+        meta["note"] = "Audio attached; transcription failed — see metadata.error."
         return ("", meta)
 
     # All other paths are synchronous.
