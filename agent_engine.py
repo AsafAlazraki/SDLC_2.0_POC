@@ -8,7 +8,7 @@ import httpx
 import json
 import re
 import logging
-from typing import List, Dict, Any, Optional, AsyncGenerator
+from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple
 from google import genai
 from google.genai import types
 import anthropic
@@ -49,10 +49,16 @@ ANTHROPIC_LAUNCH_STAGGER = 4
 # Claude Sonnet 4.6 — https://docs.anthropic.com/en/docs/about-claude/models
 COST_PER_MTOK = {
     "anthropic": {
-        "input":        3.00,   # $3 per MTok input
-        "output":      15.00,   # $15 per MTok output
+        "input":        3.00,   # $3 per MTok input  (Sonnet 4.6)
+        "output":      15.00,   # $15 per MTok output (Sonnet 4.6)
         "cache_write":  3.75,   # 25% surcharge on cache-miss writes
         "cache_read":   0.30,   # 90% discount for cache hits
+    },
+    "anthropic_opus": {
+        "input":       15.00,   # $15 per MTok input  (Opus 4.6) — 5x Sonnet
+        "output":      75.00,   # $75 per MTok output (Opus 4.6) — 5x Sonnet
+        "cache_write": 18.75,   # 25% surcharge
+        "cache_read":   1.50,   # 90% discount
     },
     "gemini": {
         "input":  0.075,        # Gemini 2.0 Flash — very cheap
@@ -60,21 +66,40 @@ COST_PER_MTOK = {
     },
 }
 
+# ─────────────────────────────────────────────
+# Synthesis model selection — Situational Opus Escalation
+# ─────────────────────────────────────────────
+# When confidence probes detect a difficult run, escalate synthesis from Sonnet
+# to Opus. Opus is ~5x cost but materially better at resolving deep
+# contradictions and reasoning about ambiguous evidence.
+SYNTHESIS_MODEL_SONNET = "claude-sonnet-4-6"
+SYNTHESIS_MODEL_OPUS   = "claude-opus-4-6"
+# Tunable thresholds — change here, not in call sites
+ESCALATE_LOW_CONFIDENCE_RATIO = 0.30   # >=30% of agents at low confidence
+ESCALATE_LOW_CONFIDENCE_COUNT = 4      # OR 4+ agents at low confidence (whichever fires first)
+ESCALATE_NO_HIGH_CONFIDENCE   = True   # If ZERO high-confidence agents, escalate regardless
+ESCALATE_THINKING_BUDGET      = 16000  # Opus gets a bigger thinking budget than Sonnet's 8K
+ESCALATE_OUTPUT_BUDGET        = 12000  # Slightly larger output for richer adjudication
 
-def _extract_anthropic_usage(message) -> Dict[str, Any]:
-    """Pull token counts + cost from an Anthropic messages response."""
+
+def _extract_anthropic_usage(message, model: str = "claude-sonnet-4-6") -> Dict[str, Any]:
+    """Pull token counts + cost from an Anthropic messages response.
+
+    Pass `model` to bill against the correct rate card — Opus runs cost ~5x Sonnet."""
     u = getattr(message, "usage", None)
     if not u:
-        return {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+        return {"provider": "anthropic", "model": model}
     d: Dict[str, Any] = {
         "provider": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "model": model,
         "input_tokens": getattr(u, "input_tokens", 0),
         "output_tokens": getattr(u, "output_tokens", 0),
         "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0,
         "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
     }
-    rates = COST_PER_MTOK["anthropic"]
+    # Pick the right rate card. Opus uses anthropic_opus, everything else uses anthropic.
+    rate_key = "anthropic_opus" if "opus" in model.lower() else "anthropic"
+    rates = COST_PER_MTOK[rate_key]
     cost_usd = (
         d["input_tokens"] * rates["input"]
         + d["output_tokens"] * rates["output"]
@@ -130,6 +155,57 @@ def aggregate_usage(items: List[Dict[str, Any]]) -> Dict[str, Any]:
         "total_cost_cents": round(total_cost_usd * 100, 2),
         "by_provider": by_provider,
     }
+
+
+# ─────────────────────────────────────────────
+# Situational Opus Escalation — synthesis model selector
+# ─────────────────────────────────────────────
+
+def should_escalate_to_opus(probe_results: Optional[Dict[str, Dict[str, Any]]]) -> Tuple[bool, str]:
+    """Decide whether synthesis should run on Opus instead of Sonnet.
+
+    Looks at the confidence-probe payload (per-agent {confidence: high|medium|low})
+    and applies the thresholds defined in module-level constants.
+
+    Returns (escalate, reason). `reason` is a short human-readable string that
+    is yielded as an SSE event so the frontend can show why we paid 5x.
+
+    Safe with `None` or `{}` input — returns (False, "") so callers don't need
+    to special-case projects that skipped the confidence probe.
+    """
+    if not probe_results:
+        return (False, "")
+
+    levels = []
+    for agent_key, probe in probe_results.items():
+        if not isinstance(probe, dict):
+            continue
+        lvl = (probe.get("confidence") or "").strip().lower()
+        if lvl in ("high", "medium", "low"):
+            levels.append(lvl)
+
+    if not levels:
+        return (False, "")
+
+    total = len(levels)
+    low_count = sum(1 for l in levels if l == "low")
+    high_count = sum(1 for l in levels if l == "high")
+    low_ratio = low_count / total if total else 0.0
+
+    # Rule 1: too many low-confidence agents (count threshold)
+    if low_count >= ESCALATE_LOW_CONFIDENCE_COUNT:
+        return (True, f"{low_count} agents flagged low confidence — escalating to Opus for deeper adjudication")
+
+    # Rule 2: too many low-confidence agents (ratio threshold)
+    if low_ratio >= ESCALATE_LOW_CONFIDENCE_RATIO:
+        pct = int(round(low_ratio * 100))
+        return (True, f"{pct}% of fleet at low confidence ({low_count}/{total}) — escalating to Opus")
+
+    # Rule 3: zero high-confidence anchors means nobody to lean on
+    if ESCALATE_NO_HIGH_CONFIDENCE and high_count == 0 and total >= 5:
+        return (True, f"No high-confidence agents in fleet of {total} — escalating to Opus to compensate")
+
+    return (False, "")
 
 
 # ─────────────────────────────────────────────
@@ -1982,16 +2058,33 @@ SYNTHESIS_CONFIG = {
 async def run_synthesis_agent(
     collected_results: Dict[str, str],
     anthropic_api_key: str,
+    model: str = SYNTHESIS_MODEL_SONNET,
+    escalation_reason: str = "",
 ) -> Dict[str, Any]:
-    """Read all persona reports and produce a CTO-level master action plan with 3 strategic paths."""
+    """Read all persona reports and produce a CTO-level master action plan with 3 strategic paths.
+
+    `model` defaults to Sonnet but callers may pass `SYNTHESIS_MODEL_OPUS` to
+    escalate (e.g. via `should_escalate_to_opus()`). Opus runs use a larger
+    thinking budget and output budget — they're already paying ~5x cost,
+    might as well give the model room to reason.
+
+    `escalation_reason` is a short human-readable string (e.g. "5 agents at
+    low confidence") that is preserved on the returned dict so the caller
+    can yield it as an SSE event for the UI.
+    """
     if not anthropic_api_key:
         return {
             "persona": "synthesis",
             "name": SYNTHESIS_CONFIG["name"],
             "emoji": SYNTHESIS_CONFIG["emoji"],
             "status": "error",
-            "content": "Synthesis requires the Anthropic API key (ANTHROPIC_API_KEY) to be set in .env."
+            "content": "Synthesis requires the Anthropic API key (ANTHROPIC_API_KEY) to be set in .env.",
+            "model": model,
+            "escalated": False,
+            "escalation_reason": "",
         }
+
+    is_opus = "opus" in model.lower()
 
     agent_names = {k: v["name"] for k, v in PERSONA_CONFIGS.items()}
     all_reports = "\n\n".join([
@@ -2080,8 +2173,9 @@ If this organisation can only do THREE things this quarter, what are they and ex
     # Extended thinking is enabled: the model reasons through contradictions in
     # a private scratchpad (budget_tokens) before writing its final answer.
     # temperature must be 1 when thinking is enabled (API requirement).
-    THINKING_BUDGET = 8000   # tokens for internal reasoning
-    OUTPUT_BUDGET = 10000    # tokens for the final written report
+    # Opus gets a larger thinking + output budget — we're already paying 5x.
+    THINKING_BUDGET = ESCALATE_THINKING_BUDGET if is_opus else 8000
+    OUTPUT_BUDGET   = ESCALATE_OUTPUT_BUDGET if is_opus else 10000
 
     # Prompt caching: the system instruction is identical across re-runs.
     synthesis_system = [
@@ -2098,7 +2192,7 @@ If this organisation can only do THREE things this quarter, what are they and ex
         try:
             client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
             message = await client.messages.create(
-                model="claude-sonnet-4-6",
+                model=model,
                 max_tokens=THINKING_BUDGET + OUTPUT_BUDGET,
                 temperature=1,  # Required when extended thinking is enabled
                 thinking={"type": "enabled", "budget_tokens": THINKING_BUDGET},
@@ -2116,7 +2210,10 @@ If this organisation can only do THREE things this quarter, what are they and ex
                 "emoji": SYNTHESIS_CONFIG["emoji"],
                 "status": "success",
                 "content": content,
-                "usage": _extract_anthropic_usage(message),
+                "usage": _extract_anthropic_usage(message, model=model),
+                "model": model,
+                "escalated": is_opus,
+                "escalation_reason": escalation_reason if is_opus else "",
             }
 
         except (anthropic.RateLimitError, anthropic.APIStatusError) as e:
@@ -2134,7 +2231,10 @@ If this organisation can only do THREE things this quarter, what are they and ex
                     "name": SYNTHESIS_CONFIG["name"],
                     "emoji": SYNTHESIS_CONFIG["emoji"],
                     "status": "error",
-                    "content": f"Synthesis error after {attempt} attempts: {str(e)}"
+                    "content": f"Synthesis error after {attempt} attempts: {str(e)}",
+                    "model": model,
+                    "escalated": is_opus,
+                    "escalation_reason": escalation_reason if is_opus else "",
                 }
 
         except Exception as e:
@@ -2143,7 +2243,10 @@ If this organisation can only do THREE things this quarter, what are they and ex
                 "name": SYNTHESIS_CONFIG["name"],
                 "emoji": SYNTHESIS_CONFIG["emoji"],
                 "status": "error",
-                "content": f"Synthesis error: {str(e)}"
+                "content": f"Synthesis error: {str(e)}",
+                "model": model,
+                "escalated": is_opus,
+                "escalation_reason": escalation_reason if is_opus else "",
             }
 
     return {
@@ -2151,7 +2254,10 @@ If this organisation can only do THREE things this quarter, what are they and ex
         "name": SYNTHESIS_CONFIG["name"],
         "emoji": SYNTHESIS_CONFIG["emoji"],
         "status": "error",
-        "content": f"Synthesis failed after {ANTHROPIC_MAX_RETRIES} retries: {str(last_error)}"
+        "content": f"Synthesis failed after {ANTHROPIC_MAX_RETRIES} retries: {str(last_error)}",
+        "model": model,
+        "escalated": is_opus,
+        "escalation_reason": escalation_reason if is_opus else "",
     }
 
 
@@ -3338,7 +3444,38 @@ async def run_agent_fleet(
             "sub_status": f"Reading all {len(collected_results)} reports and generating 3 strategic paths..."
         }
     }
-    synthesis_result = await run_synthesis_agent(collected_results, anthropic_api_key)
+
+    # Situational Opus escalation: if confidence probes flagged a difficult run,
+    # bump synthesis to Opus 4.6 so the model can reason more deeply through
+    # contradictions and ambiguous evidence. Cost ~5x; worth it on hard cases.
+    escalate, escalate_reason = should_escalate_to_opus(probe_results)
+    synthesis_model = SYNTHESIS_MODEL_OPUS if escalate else SYNTHESIS_MODEL_SONNET
+    if escalate:
+        yield {
+            "event": "synthesis_escalated",
+            "data": {
+                "model": synthesis_model,
+                "reason": escalate_reason,
+                "thinking_budget": ESCALATE_THINKING_BUDGET,
+                "output_budget": ESCALATE_OUTPUT_BUDGET,
+            }
+        }
+        # Also surface in the agent status sub-text so it shows up live
+        yield {
+            "event": "agent_update",
+            "data": {
+                "key": "synthesis",
+                "status": "thinking",
+                "sub_status": f"⚡ Escalated to Opus — {escalate_reason}"
+            }
+        }
+
+    synthesis_result = await run_synthesis_agent(
+        collected_results,
+        anthropic_api_key,
+        model=synthesis_model,
+        escalation_reason=escalate_reason,
+    )
     if synthesis_result.get("usage"):
         all_usage.append(synthesis_result["usage"])
     yield {"event": "agent_result", "data": synthesis_result}

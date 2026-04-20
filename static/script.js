@@ -467,6 +467,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 renderSpecialistProposals(data);
             }
 
+            // Phase 8 — situational Opus escalation announcement
+            if (eventType === 'synthesis_escalated') {
+                state.lastEscalation = data;
+                const msg = `⚡ Synthesis escalated to Opus — ${data.reason}`;
+                console.log('[escalation]', msg, data);
+                updateFleetStatusMessage(msg);
+            }
+
             // Phase 5 — live cost display when a run finishes.
             if (eventType === 'usage_summary') {
                 state.lastUsageSummary = data;
@@ -619,6 +627,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     renderModernisationRoadmap(result.content, contentEl);
                 } else {
                     contentEl.innerHTML = simpleMarkdown(result.content);
+                }
+                // Phase 8 — synthesis escalation badge
+                if (result.persona === 'synthesis' && result.escalated) {
+                    const banner = document.createElement('div');
+                    banner.className = 'opus-escalation-banner';
+                    banner.innerHTML = `
+                        <span class="opus-escalation-icon">⚡</span>
+                        <div class="opus-escalation-text">
+                            <strong>Escalated to Claude Opus 4.6</strong>
+                            <span>${escapeHTML(result.escalation_reason || 'Confidence-driven escalation triggered')}</span>
+                        </div>
+                        <span class="opus-escalation-cost-hint" title="Opus is ~5× the cost of Sonnet">~5× cost</span>
+                    `;
+                    contentEl.insertBefore(banner, contentEl.firstChild);
                 }
             }
 

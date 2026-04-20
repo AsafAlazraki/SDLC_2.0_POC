@@ -282,6 +282,7 @@ The `/api/analyze-repo` and `/api/analyze-topic` endpoints return `EventSourceRe
 - `confidence_report` — Phase 6: all agents' self-assessments `{probes, has_questions, questions, fleet_session_id}`
 - `awaiting_answers` — Phase 6: fleet paused, waiting for user input `{session_id, questions, message, fleet_session_id}`
 - `specialist_proposals` — Phase 7B: proposed specialist agents `{proposals[], message}`
+- `synthesis_escalated` — Phase 8: synthesis bumped Sonnet→Opus `{model, reason, thinking_budget, output_budget}`
 - `usage_summary` — Phase 5: aggregated token counts + cost `{total_input_tokens, total_output_tokens, total_cost_usd}`
 - `error` — error event
 
@@ -459,6 +460,19 @@ const state = {
 - Agents told to "tailor all recommendations to fit these constraints" and "flag anything that exceeds them"
 - PATH A/B/C recommendations become budget-scoped rather than generic
 
+### 15. Situational Opus Escalation (Phase 8)
+- **Decision function**: `should_escalate_to_opus(probe_results)` in `agent_engine.py` returns `(escalate: bool, reason: str)` based on confidence-probe payload.
+- **Three triggers** (whichever fires first):
+  - **Count**: ≥4 agents at low confidence (`ESCALATE_LOW_CONFIDENCE_COUNT = 4`)
+  - **Ratio**: ≥30% of fleet at low confidence (`ESCALATE_LOW_CONFIDENCE_RATIO = 0.30`)
+  - **No anchors**: Zero high-confidence agents in a fleet of 5+ (`ESCALATE_NO_HIGH_CONFIDENCE = True`)
+- **Bigger budgets on Opus**: 16K thinking budget (vs 8K Sonnet), 12K output budget (vs 10K Sonnet) — already paying 5×, give the model room
+- **Cost model**: New `COST_PER_MTOK["anthropic_opus"]` rate card (input $15/MTok, output $75/MTok). `_extract_anthropic_usage(message, model=...)` picks the right rates automatically.
+- **SSE event**: `synthesis_escalated` `{model, reason, thinking_budget, output_budget}` yielded before the agent_update so frontend can show "⚡ Escalated to Opus — 5 agents at low confidence" in fleet status bar
+- **Synthesis result** carries `model`, `escalated`, `escalation_reason` fields. Frontend renders an `.opus-escalation-banner` at the top of the synthesis report card with the reason and a "~5× cost" hint
+- **Tunable**: All thresholds are module-level constants in `agent_engine.py`. Change there, not at call sites.
+- **Safe defaults**: `should_escalate_to_opus(None)` and `({})` return `(False, "")` — runs without confidence probes never escalate
+
 ---
 
 ## Running Locally
@@ -568,7 +582,7 @@ The system implements a layered memory architecture inspired by the v2 Architect
 | Inter-agent communication mid-run | High | **Decided** — agents can flag critical findings to each other mid-run when the latency cost is worth it. Not yet implemented. |
 | Tier 2 artefact generation | High | **Decided** — conversational "build that" command generating code/config/docs into local project folders. Not yet implemented. |
 | Omnivorous input pipeline | Medium | **Decided** — PDFs, images (vision), spreadsheets, video/audio transcripts, zips, .osp files, code folders. Partial support exists; full pipeline not yet built. |
-| Situational Opus escalation | Medium | **Decided** — escalate synthesis to Opus 4.6 + full codebase when confidence scores are low or agents heavily contradict. Not yet implemented. |
+| Situational Opus escalation | Medium | ✅ **Done (Phase 8)** — `should_escalate_to_opus()` triggers Opus 4.6 with 16K thinking / 12K output when ≥4 agents at low confidence, ≥30% of fleet at low confidence, or zero high-confidence anchors. New SSE event `synthesis_escalated`. Frontend shows banner on synthesis card. |
 | Scheduled domain research (Layer 5) | Medium | **Deferred** — run-time research via Gemini search grounding sufficient for now. Revisit when project volume grows. |
 | Semantic search (pgvector) | Low | **Deferred** — brute-force materials injection works well up to ~20 docs. Trigger: when Layer 5 research or materials exceed 50 entries per domain. |
 | Chunked context strategy | Medium | For repos >1M chars, send multiple chunks and merge agent outputs |

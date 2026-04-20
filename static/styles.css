@@ -1608,6 +1608,8 @@ nav {
 .confidence-event code { background: rgba(168,85,247,0.1); color: #a855f7; }
 .specialist-event { background: rgba(236,72,153,0.04); border-color: #ec4899; }
 .specialist-event code { background: rgba(236,72,153,0.1); color: #ec4899; }
+.opus-event { background: linear-gradient(135deg, rgba(189,0,255,0.06), rgba(255,170,0,0.04)); border-color: rgba(189,0,255,0.4); }
+.opus-event code { background: rgba(189,0,255,0.12); color: #d966ff; }
 @media (max-width: 700px) { .hiw-sse-diagram { flex-direction: column; } .hiw-sse-arrow { align-self: center; transform: rotate(90deg); } }
 
 /* Tech grid */
@@ -4022,4 +4024,63 @@ nav {
 @keyframes fadeIn {
     from { opacity: 0; transform: translateY(8px); }
     to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ─────────────────────────────────────────────
+   Phase 8 — Situational Opus Escalation Banner
+   Surfaces when synthesis runs on Opus 4.6 instead of Sonnet 4.6
+   ───────────────────────────────────────────── */
+.opus-escalation-banner {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 18px;
+    margin-bottom: 18px;
+    border-radius: 10px;
+    background: linear-gradient(135deg,
+        rgba(189, 0, 255, 0.12) 0%,
+        rgba(255, 170, 0, 0.10) 100%);
+    border: 1px solid rgba(189, 0, 255, 0.35);
+    box-shadow: 0 0 24px rgba(189, 0, 255, 0.15);
+    animation: fadeIn 0.4s ease-out;
+}
+.opus-escalation-icon {
+    font-size: 1.6rem;
+    line-height: 1;
+    filter: drop-shadow(0 0 8px rgba(255, 170, 0, 0.6));
+}
+.opus-escalation-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+}
+.opus-escalation-text strong {
+    font-size: 0.92rem;
+    color: #d966ff;
+    font-family: 'Space Grotesk', sans-serif;
+    letter-spacing: 0.3px;
+}
+.opus-escalation-text span {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+}
+.opus-escalation-cost-hint {
+    font-size: 0.7rem;
+    padding: 4px 10px;
+    border-radius: 12px;
+    background: rgba(255, 170, 0, 0.15);
+    border: 1px solid rgba(255, 170, 0, 0.35);
+    color: var(--warning);
+    font-family: 'Space Grotesk', sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    cursor: help;
+    flex-shrink: 0;
+}
+@media (max-width: 600px) {
+    .opus-escalation-banner { flex-direction: column; align-items: flex-start; }
+    .opus-escalation-cost-hint { align-self: flex-end; }
 }

@@ -12,6 +12,18 @@ CLAUDE.md is the **architecture spec** — what the system *is* now. This file i
 
 ## Architecture Learnings
 
+### Situational Opus escalation (Phase 8)
+
+We had a "decided but not built" item to escalate synthesis from Sonnet to Opus when confidence was low. Built it. Three lessons:
+
+1. **Use a single decision function, not scattered conditionals.** `should_escalate_to_opus(probe_results)` is the only place that decides. Easy to test (5 unit cases cover all paths), easy to tune (constants live next to the function), easy to reason about (no branching at the call site).
+
+2. **Three thresholds, not one.** A single threshold like "30% low confidence" is fragile — a 3-agent fleet with one low-confidence agent shouldn't escalate, but a 19-agent fleet with 4 low-confidence agents should. Combined: count threshold (4+) OR ratio threshold (30%+) OR no-anchors guard (zero high-confidence in fleet of 5+). Each catches a real failure mode the others miss.
+
+3. **Pay 5× cost? Pay for breathing room too.** Opus runs use 16K thinking + 12K output (vs Sonnet's 8K + 10K). The marginal cost of a bigger output budget is rounding error compared to the model premium. Don't half-ass the escalation — if you trigger Opus, give it room to actually use Opus.
+
+The escalation reason gets surfaced as both an SSE event AND a banner on the synthesis card. Users always know why we paid more. Never silently spend money.
+
 ### Memory architecture (6 layers, but not equally built)
 
 We adopted a 6-layer memory model from the v2 PDF proposal but **deliberately did not build all of it**. Key principle: build what we need now, defer what's premature.

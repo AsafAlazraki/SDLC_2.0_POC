@@ -1006,6 +1006,7 @@
                                     </div>
                                     <p>After all 18+ agents complete, a sequential synthesis call reads every report concatenated and produces the master action plan. This is the only step that <em>knows about all other agents</em> — it resolves contradictions, identifies consensus (findings validated by 3+ independent agents), fills blind spots, and produces <strong>three distinct strategic paths forward</strong>: Conservative, Balanced, and Transformative — each with specific tools, timelines, and investment levels tailored to this codebase. The synthesis output then triggers Phase 5 (Living Documentation) and Phase 6 (Dynamic Agent Spawning) automatically.</p>
                                     <p class="hiw-phase-detail"><strong>Extended Thinking is enabled</strong> with an 8,000-token private reasoning budget. Before writing a single word of the final report, Claude reasons through the contradictions in a private scratchpad — e.g., "Performance says cache aggressively; Security flags caching as a risk vector — which wins and why?" The thinking blocks are discarded before storing the output. Only the authoritative final answer is shown. Output budget is 10,000 tokens.</p>
+                                    <p class="hiw-phase-detail">⚡ <strong>Situational Opus escalation</strong>: when the confidence pre-flight (Phase 2.5) detects a difficult run — 4+ agents at low confidence, ≥30% of the fleet at low confidence, or zero high-confidence anchors — synthesis is automatically escalated to <strong>Claude Opus 4.6</strong> with a larger 16K thinking budget and 12K output budget. Opus costs ~5× Sonnet but reasons more deeply through ambiguous evidence and resolves harder contradictions. The escalation reason is shown in the synthesis card so you know why we paid more.</p>
                                     <div class="hiw-verdict-sections">
                                         <span>Executive Summary</span>
                                         <span>Consensus Findings (3+ agents)</span>
@@ -1427,6 +1428,7 @@
                                     <div class="hiw-sse-event confidence-event"><code>confidence_report</code> — Pre-flight confidence levels for all agents</div>
                                     <div class="hiw-sse-event confidence-event"><code>awaiting_answers</code> — Fleet paused, waiting for user Q&A answers</div>
                                     <div class="hiw-sse-event specialist-event"><code>specialist_proposals</code> — Post-synthesis specialist agent proposals</div>
+                                    <div class="hiw-sse-event opus-event"><code>synthesis_escalated</code> — Synthesis bumped from Sonnet → Opus due to low confidence</div>
                                     <div class="hiw-sse-event status-event"><code>usage_summary</code> — Token counts, costs, model breakdown</div>
                                     <div class="hiw-sse-event error-event"><code>error</code> — Structured error with message</div>
                                 </div>
