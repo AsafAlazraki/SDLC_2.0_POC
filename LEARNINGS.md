@@ -71,6 +71,26 @@ What I learned about prompting agents to emit structured flags:
 
 Surprise: the cleanest signal that this is working will be when synthesis quality measurably improves on runs where flags were raised. We don't have that metric yet — worth adding later.
 
+### Phase 12 — Requirements → Groomed Backlog → Jira: the biggest single feature
+
+The largest feature we've shipped in one arc. Five commits (12a-12e) covering six new Python modules, one 971-line frontend module, ~260 lines of CSS, 18 new endpoints, and a 5-stage grooming pipeline with 6 collaborating agents. Key takeaways:
+
+1. **Sequential pipelines are honest.** I considered parallel grooming with synthesis (same pattern as the fleet) but it doesn't fit — you can't draft stories if you haven't clustered into features first. Sequential `Intake → Cluster → Draft → Enrich → Sequence` gives each stage a clean contract. Debugging is easier because every stage's input/output is inspectable and reproducible.
+
+2. **The 6-agent enrich stage runs concurrently per feature, not per story.** Tech Lead gets the full batch (cross-story dependencies require seeing all stories); PM/Architect/OS-Architect/OS-Migration run per-story. With the Anthropic semaphore of 2, a 5-story feature takes ~3 waves of LLM calls for enrichment. Good balance of throughput vs rate-limit safety.
+
+3. **Inline dependencies beat a separate edge table.** Stored dependencies as `story.structured_data.dependencies = [{target_id, type, reason, added_by}]` rather than a new `story_dependency` artifact kind. Rendering, editing, and versioning all get easier because the edge lives with the story. Simpler also to serialise to Jira issue links at push time.
+
+4. **Scheduler bugs are subtle.** First pass of `multi_dev_schedule` had Dashboard starting at time 0 on Dev 2 even though it was blocked by Auth (which finished at time 5). The topological order was right but the time accounting wasn't. Fix: each story's earliest-start = max(dev's current load, max(blocker finish times)). Now dev idle gaps are honest. Tracked `blocked_until` per assignment so the UI can visualise them.
+
+5. **Windows bash heredocs + mixed Unicode + literal JS quotes = pain.** I had to split the 971-line groomed.js write into 8 separate heredoc chunks because MINGW bash kept choking on some combination of Unicode emoji + apostrophes inside double-quoted JS strings inside a single-quoted heredoc. The fix: avoid Unicode in the heredoc content (use ASCII labels in status messages), use Unicode escape sequences where essential, and chunk big file writes.
+
+6. **XSS-heuristic hooks push you toward DOM builders, which are actually safer.** The security hook blocked my initial `innerHTML = template literal with ${user_data}` pattern (even though `user_data` was escaped). Converting to `document.createElement` + `appendChild` + `textContent` for every user-data rendering is more verbose but genuinely safer — you literally cannot XSS when the browser treats every value as text. The static HTML templating in the modal layouts still uses plain markup via the HTML file, not JS innerHTML, which is the right place for it.
+
+7. **Jira's API is "mostly REST, except for the custom field discovery dance".** Story points live under `customfield_10001` or `customfield_10016` or wherever THIS tenant decided. The client caches `GET /rest/api/3/field` and resolves by display name ("Story Points" → the right custom field ID) on first push. Saves the user from having to enter custom field IDs in config.
+
+8. **Graceful partial-push matters more than a clean all-or-nothing.** If push creates 14 of 15 stories and 1 fails with a "Priority not configured on this project" error, we want the 14 persisted, the 1 captured in `errors[]`, and the UI showing "14 succeeded, 1 failed — click for details." Not a rollback. Users iterate this way; they don't re-run a full push.
+
 ### Audio transcription: stamping out the omnivorous-input gap (Phase 11)
 
 The image vision work in Phase 8b made adding audio cheap. Same Gemini SDK, same `Part.from_bytes()` pattern, same async dispatch in `extract_text_async()`. The implementation took ~30 minutes, mostly because the 8b architecture was deliberately built to absorb a second async branch.

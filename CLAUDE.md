@@ -4,7 +4,7 @@
 
 ---
 
-## Build Status — Phases 1–11 shipped
+## Build Status — Phases 1–12 shipped
 
 Every "decided but not built" item from the original 26-question architecture session is now built. The branch `claude/phase-6-7-memory-and-spawning` carries:
 
@@ -20,6 +20,7 @@ Every "decided but not built" item from the original 26-question architecture se
 | 9p | Closed-loop flag resolutions (synthesis rulings mapped back to original flags) | ✅ Phase 9 polish |
 | 10 | Agent effectiveness scoring (per-agent 0-100 + custom agent scorecard + persistence) | ✅ Phase 10 |
 | 11 | Audio transcription (Gemini native audio understanding for uploaded calls/memos) | ✅ Phase 11 |
+| 12 | Requirements → Groomed Backlog → Jira (CSV/Excel upload, 5-stage grooming, Epic/Feature/Story, deps graph, multi-dev Gantt, ODC Mentor 2.0 prompt, push to Jira) | ✅ Phase 12 |
 
 **Intentionally deferred** (have triggers documented in the backlog table at the bottom of this file):
 - Scheduled domain research (Layer 5) — revisit when project volume grows
@@ -402,7 +403,7 @@ const state = {
 
 ---
 
-## Twenty Major Features (All Implemented)
+## Twenty-One Major Features (All Implemented)
 
 ### 1. Synthesis Agent — "The Verdict" (Extended Thinking enabled)
 - 19th agent, runs after all 18 parallel agents complete
@@ -585,6 +586,19 @@ const state = {
 - **Synthesis result** carries `model`, `escalated`, `escalation_reason` fields. Frontend renders an `.opus-escalation-banner` at the top of the synthesis report card with the reason and a "~5× cost" hint
 - **Tunable**: All thresholds are module-level constants in `agent_engine.py`. Change there, not at call sites.
 - **Safe defaults**: `should_escalate_to_opus(None)` and `({})` return `(False, "")` — runs without confidence probes never escalate
+
+### 21. Requirements → Groomed Backlog → Jira (Phase 12)
+- **New modules**: `requirements_parser.py` (CSV/Excel + LLM column auto-detect), `story_template.py` (17-field canonical template, 4 groups: core / planning / quality / odc), `grooming_db.py` (5 new artifact kinds: requirements_upload, story_template, jira_config, jira_push_event, plus extended backlog_item), `grooming_engine.py` (5-stage sequential pipeline, 6 agents), `jira_client.py` (async httpx-based Jira Cloud REST v3 wrapper), `static/groomed.js` (971-line frontend module).
+- **Pipeline**: Intake (validate + dedupe) → Cluster (Sonnet groups requirements into Epics → Features) → Draft (BA drafts 2-6 stories per feature) → Enrich (5 agents concurrent per feature: PM, Architect, Tech Lead, OS Architect, OS Migration) → Sequence (dependency graph, critical path DP, multi-dev greedy schedule, ODC Mentor 2.0 prompt per story).
+- **Hierarchy**: Epic → Feature → Story (three levels). Type tag on stories distinguishes story / bug / spike / tech-debt. All three levels share the `backlog_item` artifact kind with `structured_data.level` disambiguating.
+- **Dependencies**: Tech Lead auto-detects cross-story blockers with reasoning. Stored inline on each story's `structured_data.dependencies` as `[{target_id, type, reason, added_by}]`. User can edit via the dependency graph UI.
+- **Critical path**: DP over dependency DAG in points units, cycle-safe. Highlights longest chain in the graph + Gantt view.
+- **Multi-dev schedule**: Greedy topological scheduler. Each story's earliest-start = max(dev's current load, max(blocker finish times)). Tracks `blocked_until` per assignment. Configurable dev count + sprint capacity.
+- **ODC Mentor 2.0 prompts**: 6-section Markdown template (Goal, Platform Context, Implementation Approach, AC, NFR, Suggested ODC Structure, expected Mentor deliverables). Grounded in the project's OutSystems Architect fleet report when available. Regenerable per story with last 3 versions kept in history.
+- **Jira push**: Per-project config (domain, email, API token, project key). Verifies via `/myself` + `/project/{key}` before persisting. Push creates epics → stories under their epic → `blocks`/`blocked-by` issue links. Collects errors without aborting; partial success is valuable. History of each push logged as `jira_push_event` artifact.
+- **Re-upload workflow**: User can re-upload a CSV/Excel; previous uploads preserved in history. A new grooming run on the same project feeds prior stories in as "preserve themes where sensible, flag new ones."
+- **Frontend — 5 sub-tabs**: Upload / Hierarchy / Dependencies / Multi-dev Schedule / Mentor prompts. Live SSE stream displays 5 stage dots + rolling log during grooming. Story detail modal exposes all 17 template fields, Mentor prompt copy/regenerate, and dependency list.
+- **18 new API endpoints**: `/requirements/upload`, `/requirements`, `/requirements/{id}`, `/requirements/{id}/mapping` (PATCH), `/groom` (SSE), `/groomed-backlog`, `/groomed-backlog/dependency-graph`, `/groomed-backlog/schedule`, `/backlog-items/{id}` (PATCH), `/backlog-items/{id}/dependencies` (PUT), `/backlog-items/{id}/mentor-prompt/regenerate`, `/story-template` (GET/PUT), `/jira-config` (GET/PUT/DELETE), `/push-to-jira`, `/jira-pushes`.
 
 ---
 
