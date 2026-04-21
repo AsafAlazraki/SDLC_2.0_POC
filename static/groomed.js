@@ -909,6 +909,7 @@
   async function renderGroomedTab(projectId) {
     groomedState.projectId = projectId;
     switchGroomedView(groomedState.activeView || 'upload');
+    await refreshTemplateBanner();
     await refreshUploads();
     await refreshBacklogTree();
   }
@@ -969,3 +970,33 @@
     initGroomedTab();
   }
 })();
+
+  // ===== Template indicator =====
+  // When the Groomed Backlog tab opens, fetch the effective template for
+  // the project and surface whether it's the built-in best-practice default
+  // or a per-project override. The grooming pipeline always works: no
+  // override -> the 17-field best-practice template applies automatically.
+  async function refreshTemplateBanner() {
+    const el = $g('groomed-template-banner');
+    if (!el || !groomedState.projectId) return;
+    try {
+      const res = await fetch('/api/projects/' + groomedState.projectId + '/story-template');
+      const data = await res.json();
+      const fieldCount = (data.template || []).length;
+      el.textContent = '';
+      const strong = document.createElement('strong');
+      strong.textContent = data.is_override ? 'Custom template' : 'Best-practice default';
+      el.appendChild(strong);
+      el.appendChild(document.createTextNode(' in use: ' + fieldCount + ' fields across core, planning, quality, and ODC groups.'));
+      if (!data.is_override) {
+        const hint = document.createElement('span');
+        hint.className = 'muted-text text-sm';
+        hint.textContent = '  No per-project template configured — grooming will use the built-in best practice (As-a/I-want/so-that + Given/When/Then AC + MoSCoW + story points + ODC Mentor prompt).';
+        el.appendChild(hint);
+      }
+      el.className = 'groomed-template-banner' + (data.is_override ? ' is-override' : ' is-default');
+    } catch (e) {
+      el.textContent = 'Using best-practice default template.';
+      el.className = 'groomed-template-banner is-default';
+    }
+  }

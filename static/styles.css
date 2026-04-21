@@ -4791,3 +4791,23 @@ nav {
     font-family: 'Space Grotesk', monospace; font-size: 0.78rem;
     white-space: pre-wrap; max-height: 260px; overflow-y: auto;
 }
+
+/* Phase 12 — Story template indicator on the Upload view */
+.groomed-template-banner {
+    padding: 10px 14px; margin-bottom: 14px;
+    border-radius: 8px; font-size: 0.85rem;
+    background: rgba(0, 242, 255, 0.06);
+    border: 1px solid rgba(0, 242, 255, 0.2);
+    line-height: 1.5;
+}
+.groomed-template-banner:empty { display: none; }
+.groomed-template-banner.is-default {
+    background: rgba(0, 255, 163, 0.05);
+    border-color: rgba(0, 255, 163, 0.22);
+}
+.groomed-template-banner.is-default strong { color: #00ffa3; }
+.groomed-template-banner.is-override {
+    background: rgba(189, 0, 255, 0.06);
+    border-color: rgba(189, 0, 255, 0.22);
+}
+.groomed-template-banner.is-override strong { color: #d966ff; }
