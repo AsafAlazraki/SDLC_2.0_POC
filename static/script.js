@@ -2786,6 +2786,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (tab === 'runs') return renderRunsTab(proj.id);
         if (tab === 'artifacts') return renderArtifactsTab(proj.id);
         if (tab === 'backlog') return renderBacklogTab(proj.id);
+        if (tab === 'groomed') return renderGroomedTab(proj.id);
         if (tab === 'documents') return renderDocumentsTab(proj.id);
     }
 

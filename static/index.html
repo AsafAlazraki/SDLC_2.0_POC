@@ -135,6 +135,7 @@
                                     <button class="project-tab" data-tab="runs" role="tab">Runs</button>
                                     <button class="project-tab" data-tab="artifacts" role="tab">Artifacts</button>
                                     <button class="project-tab" data-tab="backlog" role="tab">Backlog</button>
+                                    <button class="project-tab" data-tab="groomed" role="tab">🪄 Groomed Backlog</button>
                                     <button class="project-tab" data-tab="documents" role="tab">📋 Documents</button>
                                 </div>
 
@@ -299,6 +300,168 @@
                                                 <button id="backlog-edit-delete" class="secondary-btn btn-sm" style="margin-right:auto; color:#f87171;">🗑 Delete</button>
                                                 <button id="backlog-edit-cancel" class="secondary-btn btn-sm">Cancel</button>
                                                 <button id="backlog-edit-save" class="primary-btn btn-sm">Save</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Groomed Backlog tab (Phase 12 — Requirements → Groomed Backlog → Jira) -->
+                                <div class="project-tab-panel hidden" data-panel="groomed">
+                                    <div class="glass-card groomed-shell">
+                                        <div class="groomed-toolbar">
+                                            <div class="groomed-toolbar__left">
+                                                <h3>🪄 Groomed Backlog</h3>
+                                                <p class="muted-text text-sm" id="groomed-summary">Upload a requirements spreadsheet, let the agent team cluster it into epics/features/stories, then push to Jira.</p>
+                                            </div>
+                                            <div class="groomed-toolbar__right">
+                                                <button id="groomed-jira-cfg-btn" class="secondary-btn btn-sm" title="Configure Jira credentials">⚙️ Jira config</button>
+                                                <button id="groomed-push-jira-btn" class="primary-btn btn-sm" title="Push backlog to Jira">🚀 Push to Jira</button>
+                                                <button id="groomed-refresh-btn" class="secondary-btn btn-sm" title="Reload from server">⟳</button>
+                                            </div>
+                                        </div>
+
+                                        <!-- View switcher -->
+                                        <div class="groomed-view-tabs" role="tablist">
+                                            <button class="groomed-view-tab active" data-groomed-view="upload" role="tab">📥 Upload</button>
+                                            <button class="groomed-view-tab" data-groomed-view="tree" role="tab">🌳 Hierarchy</button>
+                                            <button class="groomed-view-tab" data-groomed-view="deps" role="tab">🕸️ Dependencies</button>
+                                            <button class="groomed-view-tab" data-groomed-view="schedule" role="tab">📅 Multi-dev Schedule</button>
+                                            <button class="groomed-view-tab" data-groomed-view="mentor" role="tab">🧑‍🏫 Mentor prompts</button>
+                                        </div>
+
+                                        <div id="groomed-status" class="groomed-status muted-text text-sm"></div>
+
+                                        <!-- UPLOAD VIEW -->
+                                        <div class="groomed-view-panel active" data-groomed-view="upload">
+                                            <div class="groomed-upload-zone">
+                                                <input type="file" id="groomed-upload-input" accept=".csv,.tsv,.xlsx,.xlsm" style="display:none;" />
+                                                <label for="groomed-upload-input" class="groomed-upload-label">
+                                                    <span class="groomed-upload-icon">📊</span>
+                                                    <span class="groomed-upload-text">
+                                                        <strong>Drop a CSV or Excel file here</strong>
+                                                        <small>We'll auto-detect the columns and preview the mapping</small>
+                                                    </span>
+                                                </label>
+                                            </div>
+
+                                            <!-- Mapping preview (populated after upload) -->
+                                            <div id="groomed-mapping-preview" class="groomed-mapping-preview hidden">
+                                                <h4>Column mapping preview</h4>
+                                                <p class="muted-text text-sm" id="groomed-mapping-reasoning"></p>
+                                                <table class="groomed-mapping-table">
+                                                    <thead><tr><th>Canonical field</th><th>Source column</th><th></th></tr></thead>
+                                                    <tbody id="groomed-mapping-rows"></tbody>
+                                                </table>
+                                                <div class="groomed-unmapped" id="groomed-unmapped"></div>
+                                                <div class="groomed-mapping-actions">
+                                                    <label class="groomed-inline-label">Dev count
+                                                        <input type="number" id="groomed-dev-count" min="1" max="12" value="3" class="theme-input" style="width:70px;" />
+                                                    </label>
+                                                    <button id="groomed-start-btn" class="primary-btn">▶ Start Grooming</button>
+                                                </div>
+                                            </div>
+
+                                            <!-- Upload history -->
+                                            <div class="groomed-uploads">
+                                                <h4>Previous uploads</h4>
+                                                <ul id="groomed-uploads-list" class="groomed-uploads-list"><li class="muted-text text-sm">None yet.</li></ul>
+                                            </div>
+
+                                            <!-- Live grooming progress -->
+                                            <div id="groomed-progress" class="groomed-progress hidden">
+                                                <h4>Grooming in progress…</h4>
+                                                <div class="groomed-progress-stages" id="groomed-progress-stages"></div>
+                                                <div class="groomed-progress-log" id="groomed-progress-log"></div>
+                                            </div>
+                                        </div>
+
+                                        <!-- HIERARCHY (tree) VIEW -->
+                                        <div class="groomed-view-panel hidden" data-groomed-view="tree">
+                                            <div class="groomed-tree" id="groomed-tree">
+                                                <p class="muted-text">No groomed backlog yet. Upload requirements to begin.</p>
+                                            </div>
+                                        </div>
+
+                                        <!-- DEPENDENCY GRAPH VIEW -->
+                                        <div class="groomed-view-panel hidden" data-groomed-view="deps">
+                                            <div id="groomed-deps-graph" class="groomed-deps-graph">
+                                                <p class="muted-text">No dependencies computed yet.</p>
+                                            </div>
+                                            <div id="groomed-deps-legend" class="groomed-deps-legend"></div>
+                                        </div>
+
+                                        <!-- MULTI-DEV SCHEDULE VIEW -->
+                                        <div class="groomed-view-panel hidden" data-groomed-view="schedule">
+                                            <div class="groomed-schedule-controls">
+                                                <label class="groomed-inline-label">Devs
+                                                    <input type="number" id="groomed-sched-devs" min="1" max="12" value="3" class="theme-input" style="width:70px;" />
+                                                </label>
+                                                <label class="groomed-inline-label">Sprint capacity (pts)
+                                                    <input type="number" id="groomed-sched-capacity" min="1" max="50" value="13" class="theme-input" style="width:80px;" />
+                                                </label>
+                                                <button id="groomed-sched-recompute" class="secondary-btn btn-sm">Re-compute</button>
+                                                <span id="groomed-sched-summary" class="muted-text text-sm"></span>
+                                            </div>
+                                            <div id="groomed-sched-gantt" class="groomed-sched-gantt">
+                                                <p class="muted-text">Schedule will render here after grooming completes.</p>
+                                            </div>
+                                        </div>
+
+                                        <!-- MENTOR PROMPTS VIEW -->
+                                        <div class="groomed-view-panel hidden" data-groomed-view="mentor">
+                                            <p class="muted-text text-sm">Every groomed story has an ODC Mentor 2.0 prompt. Click any story title to open the detail modal and copy / regenerate the prompt.</p>
+                                            <div id="groomed-mentor-list" class="groomed-mentor-list"></div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Jira config modal -->
+                                    <div id="groomed-jira-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+                                        <div class="modal glass-card">
+                                            <div class="modal-header">
+                                                <h3>Jira configuration</h3>
+                                                <button class="modal-close" id="groomed-jira-close" aria-label="Close">×</button>
+                                            </div>
+                                            <div class="modal-body">
+                                                <div class="input-group">
+                                                    <label>Atlassian domain</label>
+                                                    <input type="text" id="groomed-jira-domain" class="theme-input" placeholder="acme.atlassian.net" />
+                                                </div>
+                                                <div class="input-group">
+                                                    <label>Email</label>
+                                                    <input type="email" id="groomed-jira-email" class="theme-input" placeholder="you@acme.com" />
+                                                </div>
+                                                <div class="input-group">
+                                                    <label>API token <span class="muted-text text-sm">(from id.atlassian.com/manage-profile/security/api-tokens)</span></label>
+                                                    <input type="password" id="groomed-jira-token" class="theme-input" placeholder="Paste your API token" />
+                                                </div>
+                                                <div class="input-group">
+                                                    <label>Target project key</label>
+                                                    <input type="text" id="groomed-jira-project-key" class="theme-input" placeholder="ACM" />
+                                                </div>
+                                                <div id="groomed-jira-status" class="muted-text text-sm"></div>
+                                            </div>
+                                            <div class="modal-footer">
+                                                <button id="groomed-jira-cfg-clear" class="secondary-btn btn-sm" style="margin-right:auto; color:#f87171;">🗑 Clear</button>
+                                                <button id="groomed-jira-cfg-cancel" class="secondary-btn btn-sm">Cancel</button>
+                                                <button id="groomed-jira-cfg-save" class="primary-btn btn-sm">Test & Save</button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Story detail modal -->
+                                    <div id="groomed-story-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+                                        <div class="modal glass-card groomed-story-modal">
+                                            <div class="modal-header">
+                                                <h3 id="groomed-story-title">Story detail</h3>
+                                                <button class="modal-close" id="groomed-story-close" aria-label="Close">×</button>
+                                            </div>
+                                            <div class="modal-body" id="groomed-story-body">
+                                                <!-- Rendered dynamically by JS -->
+                                            </div>
+                                            <div class="modal-footer">
+                                                <button id="groomed-story-regen-mentor" class="secondary-btn btn-sm">🔄 Regenerate Mentor prompt</button>
+                                                <button id="groomed-story-cancel" class="secondary-btn btn-sm">Close</button>
+                                                <button id="groomed-story-save" class="primary-btn btn-sm">Save changes</button>
                                             </div>
                                         </div>
                                     </div>
@@ -1744,6 +1907,7 @@
         window.mermaid = mermaid;
     </script>
     <script src="/static/script.js" type="module"></script>
+    <script src="/static/groomed.js"></script>
     <!-- Persona Profile Modal -->
     <div id="persona-modal" class="modal-overlay" style="display:none;">
         <div class="modal-content glass-card">
