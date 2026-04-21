@@ -11,7 +11,7 @@ ENV_GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 ENV_ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ENV_GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -2406,6 +2406,481 @@ async def analyze_data(
         return {"status": "success", "results": result_map}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 12 — Requirements Intake → Groomed Backlog → Jira
+# ═══════════════════════════════════════════════════════════════════════════
+import requirements_parser
+import grooming_db
+import grooming_engine
+import story_template
+import jira_client as _jira_client
+
+
+# ─── Upload CSV/Excel of raw requirements ──────────────────────────────────
+
+@app.post("/api/projects/{project_id}/requirements/upload")
+async def api_upload_requirements(project_id: int, file: UploadFile = File(...)):
+    """Upload a CSV or Excel sheet of customer requirements. We parse, run
+    LLM column auto-detection, and persist the upload (with parsed rows +
+    mapping) as a project_artifact with kind='requirements_upload'.
+    The grooming pipeline runs in a separate call."""
+    proj = database.get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
+
+    payload = await file.read()
+    result = requirements_parser.parse_requirements_file(payload, file.filename or "(unnamed)")
+    if result.error:
+        raise HTTPException(status_code=400, detail=result.error)
+
+    mapping = await requirements_parser.autodetect_columns(result, ENV_GEMINI_KEY)
+    saved = grooming_db.create_requirements_upload(
+        project_id,
+        filename=result.filename,
+        kind=result.kind,
+        row_count=result.row_count,
+        columns=result.columns,
+        column_mapping=mapping.mapping,
+        mapping_confidence=mapping.confidence,
+        warnings=result.warnings,
+        raw_rows=result.rows,
+    )
+    return {
+        "upload": saved,
+        "parse": {
+            "rows": result.row_count,
+            "columns": result.columns,
+            "warnings": result.warnings,
+            "sheet_names": result.sheet_names,
+            "sheet_used": result.sheet_used,
+        },
+        "mapping": {
+            "mapping": mapping.mapping,
+            "confidence": mapping.confidence,
+            "unmapped_sources": mapping.unmapped_sources,
+            "reasoning": mapping.reasoning,
+            "source": mapping.source,
+        },
+    }
+
+
+@app.get("/api/projects/{project_id}/requirements")
+def api_list_requirements_uploads(project_id: int):
+    """List all requirements uploads for this project (newest first)."""
+    rows = grooming_db.list_requirements_uploads(project_id)
+    return [{
+        "id": r["id"],
+        "filename": (r.get("structured_data") or {}).get("filename", r.get("title")),
+        "row_count": (r.get("structured_data") or {}).get("row_count", 0),
+        "uploaded_at": (r.get("structured_data") or {}).get("uploaded_at") or r.get("created_at"),
+        "mapping_confidence": (r.get("structured_data") or {}).get("mapping_confidence", "?"),
+        "kind": (r.get("structured_data") or {}).get("kind", "?"),
+    } for r in rows]
+
+
+@app.get("/api/projects/{project_id}/requirements/{upload_id}")
+def api_get_requirements_upload(project_id: int, upload_id: int):
+    """Retrieve a specific upload with full parsed rows + mapping + warnings.
+    Used by the pre-groom review UI."""
+    row = grooming_db.get_requirements_upload(upload_id)
+    if not row or row.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="Upload not found for this project.")
+    return row
+
+
+@app.patch("/api/projects/{project_id}/requirements/{upload_id}/mapping")
+def api_patch_upload_mapping(project_id: int, upload_id: int, payload: Dict[str, Any] = Body(...)):
+    """Edit the LLM-suggested column mapping before running the grooming pipeline.
+    Body: {'mapping': {'description': 'Req Description', ...}}."""
+    row = grooming_db.get_requirements_upload(upload_id)
+    if not row or row.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="Upload not found for this project.")
+    new_mapping = payload.get("mapping") or {}
+    if not isinstance(new_mapping, dict) or "description" not in new_mapping:
+        raise HTTPException(status_code=400, detail="Mapping must be a dict with at least 'description'.")
+    sd = dict(row.get("structured_data") or {})
+    sd["column_mapping"] = new_mapping
+    sd["mapping_confidence"] = "user"
+    return database.update_project_artifact(upload_id, {"structured_data": sd})
+
+
+# ─── Run grooming pipeline (SSE streaming) ─────────────────────────────────
+
+class GroomingRequest(BaseModel):
+    upload_id: int
+    dev_count: int = 3
+    include_prior_stories: bool = True
+    include_fleet_findings: bool = True
+
+
+@app.post("/api/projects/{project_id}/groom")
+async def api_run_grooming(project_id: int, request: GroomingRequest):
+    """Run the 5-stage grooming pipeline against an uploaded requirements set.
+    Streams SSE events per stage. After 'grooming_complete', the enriched
+    epic/feature/story tree is persisted via grooming_db.
+    """
+    proj = database.get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found.")
+    upload = grooming_db.get_requirements_upload(request.upload_id)
+    if not upload or upload.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="Upload not found for this project.")
+
+    sd = upload.get("structured_data") or {}
+    raw_rows = sd.get("raw_rows") or []
+    mapping = sd.get("column_mapping") or {}
+
+    # Rehydrate NormalisedRequirements from the stored rows.
+    # We replay the parser's normalise step — the upload row already stored
+    # the parsed rows post-dedupe, so we just need the canonical mapping
+    # applied.
+    parse_stub = requirements_parser.ParseResult(
+        filename=sd.get("filename", ""),
+        rows=raw_rows,
+        columns=sd.get("columns", []),
+        row_count=len(raw_rows),
+        kind=sd.get("kind", "csv"),
+    )
+    column_mapping = requirements_parser.ColumnMapping(
+        mapping=mapping, confidence=sd.get("mapping_confidence", "medium"),
+    )
+    norm_reqs = requirements_parser.normalise_rows(parse_stub, column_mapping)
+
+    # Optional context — previously-groomed stories + fleet findings
+    prior_summary = ""
+    if request.include_prior_stories:
+        prior_items = grooming_db.list_groomed_items(project_id)
+        if prior_items:
+            titles = [r.get("title", "") for r in prior_items[:40]]
+            prior_summary = "Previously groomed items:\n- " + "\n- ".join(t for t in titles if t)
+
+    fleet_summary = ""
+    if request.include_fleet_findings:
+        try:
+            mem = database.get_episodic_memory(project_id)
+            synth_hist = (mem or {}).get("synthesis_history", [])
+            if synth_hist:
+                fleet_summary = (synth_hist[0].get("content", "") or "")[:3000]
+        except Exception:
+            pass
+
+    os_blueprint = ""
+    try:
+        # If the fleet has run and produced an OutSystems Architect report,
+        # pull its content as blueprint context for the Mentor prompts.
+        os_reports = [r for r in database.list_project_artifacts(project_id, kind="report")
+                      if r.get("persona_key") == "outsystems_architect"]
+        if os_reports:
+            os_blueprint = (os_reports[0].get("content") or "")[:4000]
+    except Exception:
+        pass
+
+    async def event_stream():
+        persisted_enriched_tree = None
+        try:
+            async for ev in grooming_engine.run_grooming(
+                project_id=project_id,
+                upload_id=request.upload_id,
+                requirements=norm_reqs,
+                anthropic_api_key=ENV_ANTHROPIC_KEY,
+                gemini_api_key=ENV_GEMINI_KEY,
+                prior_groomed_summary=prior_summary,
+                fleet_findings_summary=fleet_summary,
+                os_blueprint=os_blueprint,
+                dev_count=request.dev_count,
+            ):
+                if ev["event"] == "grooming_complete":
+                    persisted_enriched_tree = ev["data"].get("enriched_epics")
+                yield {"event": ev["event"], "data": json.dumps(ev["data"])}
+        except Exception as e:
+            logger.exception("grooming stream failed")
+            yield {"event": "grooming_error", "data": json.dumps({"stage": "stream", "message": str(e)})}
+            return
+
+        # Persist after the stream finishes
+        if persisted_enriched_tree:
+            try:
+                _persist_groomed_tree(project_id, request.upload_id, persisted_enriched_tree)
+                yield {"event": "grooming_persisted", "data": json.dumps({"ok": True})}
+            except Exception as e:
+                logger.exception("grooming persistence failed")
+                yield {"event": "grooming_persisted", "data": json.dumps({"ok": False, "error": str(e)})}
+
+    return EventSourceResponse(event_stream())
+
+
+def _persist_groomed_tree(project_id: int, upload_id: int, enriched_epics: List[Dict[str, Any]]) -> None:
+    """Persist the output of run_grooming() as epic/feature/story artifacts.
+    Resolves `target_index` dependencies to real DB IDs in a second pass."""
+    # Pass 1: write epics, features, stories. Track temp-index -> DB id.
+    global_story_index_to_db: Dict[int, int] = {}
+    global_story_index = 0
+    all_story_payloads: List[Dict[str, Any]] = []   # (db_id, index, story_dict)
+
+    for epic in enriched_epics:
+        epic_row = grooming_db.create_groomed_item(project_id, "epic", {
+            "title": epic.get("title"),
+            "story": epic.get("description"),
+            "priority": "Must",
+            "type": "story",
+            "provenance": "groomed",
+            "upload_id": upload_id,
+            "requirement_source_id": epic.get("epic_key", ""),
+            "labels": ["epic"],
+        })
+        epic_db_id = (epic_row or {}).get("id")
+        if not epic_db_id:
+            continue
+        for feature in epic.get("features", []):
+            feature_row = grooming_db.create_groomed_item(project_id, "feature", {
+                "title": feature.get("title"),
+                "story": feature.get("description"),
+                "parent_epic_id": epic_db_id,
+                "priority": "Should",
+                "type": "story",
+                "provenance": "groomed",
+                "upload_id": upload_id,
+                "requirement_source_id": feature.get("feature_key", ""),
+                "labels": ["feature"],
+            })
+            feature_db_id = (feature_row or {}).get("id")
+            for story in feature.get("stories", []):
+                story_db_row = grooming_db.create_groomed_item(project_id, "story", {
+                    "title": story.get("title"),
+                    "story": story.get("story"),
+                    "acceptance_criteria": story.get("acceptance_criteria"),
+                    "points": story.get("story_points"),
+                    "priority": story.get("priority"),
+                    "type": story.get("type") or "story",
+                    "parent_epic_id": epic_db_id,
+                    "parent_feature_id": feature_db_id,
+                    "provenance": "groomed",
+                    "upload_id": upload_id,
+                    "requirement_source_id": ",".join(story.get("requirement_source_ids") or []),
+                    "labels": [],
+                    "definition_of_done": "",
+                    "risks_assumptions": story.get("risks_assumptions", ""),
+                    "nfr_notes": story.get("nfr_notes", ""),
+                    "odc_entities": story.get("odc_entities", []),
+                    "odc_screens": story.get("odc_screens", []),
+                    "mentor_prompt": story.get("mentor_prompt", ""),
+                    "dependencies": [],  # resolved in pass 2
+                })
+                if story_db_row and story_db_row.get("id"):
+                    global_story_index_to_db[global_story_index] = story_db_row["id"]
+                    all_story_payloads.append((story_db_row["id"], global_story_index, story))
+                global_story_index += 1
+
+    # Pass 2: resolve target_index → DB id for dependencies
+    for db_id, idx, story in all_story_payloads:
+        deps = []
+        for raw_dep in story.get("dependencies") or []:
+            ti = raw_dep.get("target_index")
+            if ti is None:
+                continue
+            # Convert local (within-feature) index into global index — we
+            # stored the offset when building synth_edges in the engine.
+            # For simplicity here, we look up via the order they were
+            # processed (same order as synth_edges built): local index was
+            # already translated to global in the engine. So ti is already
+            # global.
+            tgt_db = global_story_index_to_db.get(ti)
+            if tgt_db and tgt_db != db_id:
+                deps.append({
+                    "target_id": tgt_db,
+                    "type": raw_dep.get("type", "blocked_by"),
+                    "reason": raw_dep.get("reason", ""),
+                    "added_by": raw_dep.get("added_by", "tech_lead"),
+                })
+        if deps:
+            grooming_db.set_story_dependencies(db_id, deps)
+
+
+# ─── Read groomed backlog ──────────────────────────────────────────────────
+
+@app.get("/api/projects/{project_id}/groomed-backlog")
+def api_get_groomed_backlog(project_id: int):
+    """Nested Epic → Feature → Story tree for the project."""
+    return grooming_db.get_groomed_tree(project_id)
+
+
+@app.get("/api/projects/{project_id}/groomed-backlog/dependency-graph")
+def api_get_dependency_graph(project_id: int):
+    """Flat nodes+edges for Mermaid/Cytoscape rendering."""
+    return grooming_db.get_dependency_graph(project_id)
+
+
+@app.get("/api/projects/{project_id}/groomed-backlog/schedule")
+def api_get_schedule(project_id: int, dev_count: int = 3, sprint_capacity: int = 13):
+    """Re-compute the multi-dev schedule from current backlog + deps.
+    Useful after user edits points or dependencies."""
+    graph = grooming_db.get_dependency_graph(project_id)
+    sched = grooming_engine.multi_dev_schedule(graph["nodes"], graph["edges"],
+                                               dev_count=dev_count,
+                                               sprint_capacity=sprint_capacity)
+    cp = grooming_engine.compute_critical_path(graph["nodes"], graph["edges"])
+    return {"critical_path_ids": cp, "schedule": sched}
+
+
+# ─── Story / epic / feature edit ───────────────────────────────────────────
+
+@app.patch("/api/projects/{project_id}/backlog-items/{item_id}")
+def api_patch_backlog_item(project_id: int, item_id: int, partial: Dict[str, Any] = Body(...)):
+    """Edit any backlog item (epic/feature/story). Reuses Phase 4's
+    update_backlog_item, which merges into structured_data and re-derives
+    title/content. Dependencies are handled by a dedicated endpoint."""
+    return database.update_backlog_item(item_id, partial)
+
+
+@app.put("/api/projects/{project_id}/backlog-items/{item_id}/dependencies")
+def api_set_story_dependencies(project_id: int, item_id: int, deps: Dict[str, Any] = Body(...)):
+    """Replace a story's full dependency list. Body: {dependencies: [{target_id, type, reason}]}."""
+    return grooming_db.set_story_dependencies(item_id, deps.get("dependencies") or [])
+
+
+class MentorRegenRequest(BaseModel):
+    platform_context: Optional[str] = None  # optional override
+
+
+@app.post("/api/projects/{project_id}/backlog-items/{item_id}/mentor-prompt/regenerate")
+async def api_regenerate_mentor_prompt(project_id: int, item_id: int, request: MentorRegenRequest = Body(...)):
+    """Regenerate the ODC Mentor 2.0 prompt for a story using the current
+    fields. Keeps the last 3 versions."""
+    try:
+        existing = database.supabase.table("project_artifacts").select("*").eq("id", item_id).single().execute().data
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Story not found: {e}")
+    if not existing or existing.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="Story not found for this project.")
+
+    sd = existing.get("structured_data") or {}
+    # Fetch OS blueprint if available
+    os_blueprint = request.platform_context or ""
+    if not os_blueprint:
+        try:
+            os_reports = [r for r in database.list_project_artifacts(project_id, kind="report")
+                          if r.get("persona_key") == "outsystems_architect"]
+            if os_reports:
+                os_blueprint = (os_reports[0].get("content") or "")[:4000]
+        except Exception:
+            pass
+
+    new_prompt = await grooming_engine.stage_mentor_prompt(
+        story={
+            "title": existing.get("title") or "Story",
+            "story": sd.get("story") or "",
+            "acceptance_criteria": sd.get("acceptance_criteria") or "",
+            "nfr_notes": sd.get("nfr_notes") or "",
+            "odc_entities": sd.get("odc_entities") or [],
+            "odc_screens": sd.get("odc_screens") or [],
+            "_enrichment_notes": sd.get("_enrichment_notes") or {},
+        },
+        os_blueprint=os_blueprint,
+        anthropic_api_key=ENV_ANTHROPIC_KEY,
+    )
+    updated = grooming_db.set_mentor_prompt(item_id, new_prompt)
+    return {"ok": bool(updated), "mentor_prompt": new_prompt, "updated": updated}
+
+
+# ─── Story template ────────────────────────────────────────────────────────
+
+@app.get("/api/projects/{project_id}/story-template")
+def api_get_story_template(project_id: int):
+    """Return the effective template for this project (override if present,
+    else the global default)."""
+    override_row = grooming_db.get_story_template_artifact(project_id)
+    template = (override_row or {}).get("structured_data", {}).get("template") if override_row else None
+    effective = story_template.merged_template(template)
+    return {
+        "template": effective,
+        "is_override": bool(template),
+        "default": story_template.DEFAULT_TEMPLATE,
+    }
+
+
+@app.put("/api/projects/{project_id}/story-template")
+def api_set_story_template(project_id: int, payload: Dict[str, Any] = Body(...)):
+    """Set (or update) the per-project template override. Versioned."""
+    tmpl = payload.get("template")
+    if not isinstance(tmpl, list):
+        raise HTTPException(status_code=400, detail="Body must include 'template' as a list of field dicts.")
+    return grooming_db.set_story_template(project_id, tmpl)
+
+
+# ─── Jira config + push ────────────────────────────────────────────────────
+
+class JiraConfigRequest(BaseModel):
+    domain: str
+    email: str
+    api_token: str
+    project_key: str
+
+
+@app.get("/api/projects/{project_id}/jira-config")
+def api_get_jira_config(project_id: int):
+    """Return the Jira config for this project (token masked)."""
+    cfg = grooming_db.get_jira_config(project_id)
+    return cfg or {"domain": "", "email": "", "project_key": "", "has_token": False}
+
+
+@app.put("/api/projects/{project_id}/jira-config")
+async def api_set_jira_config(project_id: int, request: JiraConfigRequest):
+    """Store/update a project's Jira config after verifying the credentials work."""
+    client = _jira_client.JiraClient(request.domain, request.email, request.api_token)
+    auth_ok, auth_msg = await client.verify_connection()
+    if not auth_ok:
+        raise HTTPException(status_code=400, detail=f"Jira auth failed: {auth_msg}")
+    proj_ok, proj_msg = await client.verify_project(request.project_key)
+    if not proj_ok:
+        raise HTTPException(status_code=400, detail=proj_msg)
+
+    saved = grooming_db.set_jira_config(
+        project_id,
+        domain=request.domain, email=request.email,
+        api_token=request.api_token, project_key=request.project_key,
+    )
+    return {"ok": True, "saved": bool(saved), "auth": auth_msg, "project": proj_msg}
+
+
+@app.delete("/api/projects/{project_id}/jira-config")
+def api_clear_jira_config(project_id: int):
+    return {"ok": grooming_db.clear_jira_config(project_id)}
+
+
+@app.post("/api/projects/{project_id}/push-to-jira")
+async def api_push_to_jira(project_id: int):
+    """Push the groomed backlog to Jira. Creates epics, stories, and
+    dependency links. Returns a summary with counts and per-failure details."""
+    cfg = grooming_db.get_jira_config(project_id, include_token=True)
+    if not cfg or not cfg.get("project_key") or not cfg.get("api_token"):
+        raise HTTPException(status_code=400, detail="Jira not configured for this project. Set domain/email/api_token/project_key first.")
+
+    tree = grooming_db.get_groomed_tree(project_id)
+    if not tree.get("epics") and not tree.get("orphans"):
+        raise HTTPException(status_code=400, detail="No groomed backlog to push. Run grooming first.")
+    graph = grooming_db.get_dependency_graph(project_id)
+
+    result = await _jira_client.push_groomed_backlog_to_jira(
+        jira_cfg=cfg, backlog_tree=tree, dep_graph=graph,
+    )
+
+    grooming_db.record_jira_push(
+        project_id,
+        pushed_epics=result.get("pushed_epics", 0),
+        pushed_stories=result.get("pushed_stories", 0),
+        created_keys=result.get("created_keys", []),
+        errors=result.get("errors", []),
+        jira_project_key=cfg["project_key"],
+    )
+    return result
+
+
+@app.get("/api/projects/{project_id}/jira-pushes")
+def api_list_jira_pushes(project_id: int):
+    """List past push-to-Jira events (history). Useful for audit + debugging."""
+    return grooming_db.list_jira_pushes(project_id)
 
 
 if __name__ == "__main__":
