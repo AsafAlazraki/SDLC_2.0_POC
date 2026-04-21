@@ -12,3 +12,5 @@ trafilatura
 pyyaml
 pypdf
 python-docx
+openpyxl
+pandas
