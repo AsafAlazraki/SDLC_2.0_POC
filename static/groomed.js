@@ -129,32 +129,53 @@
     }
   }
 
-  async function persistMappingEdits() {
-    if (!groomedState.currentUpload) return false;
+  // Read the current dropdown values and return a mapping dict.
+  // Returns null if the mandatory 'description' field is unmapped.
+  function collectCurrentMapping() {
     const mapping = {};
-    document.querySelectorAll('#groomed-mapping-rows select').forEach(sel => {
+    document.querySelectorAll('#groomed-mapping-rows select').forEach(function(sel) {
       if (sel.value) mapping[sel.dataset.canon] = sel.value;
     });
-    if (!mapping.description) {
-      setStatus('Cannot run grooming — description column must be mapped.', 'error');
-      return false;
-    }
+    return mapping;
+  }
+
+  // Try to persist the mapping to the upload row. Best-effort — on failure
+  // we still allow grooming to proceed with the inline mapping_override.
+  // Large uploads (>500 rows) can hit Supabase payload timeouts on the
+  // round-trip rewrite of structured_data; when that happens, the inline
+  // path still gets the user's edits applied to THIS groom run.
+  async function persistMappingEdits(mapping) {
+    if (!groomedState.currentUpload) return false;
     const upId = groomedState.currentUpload.upload.id;
     try {
       const res = await fetch('/api/projects/' + groomedState.projectId + '/requirements/' + upId + '/mapping', {
         method: 'PATCH',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({mapping}),
+        body: JSON.stringify({mapping: mapping}),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        // Non-fatal — surface the reason but don't block grooming.
+        const body = await res.text();
+        setStatus('Mapping not persisted ('+ res.status + '): ' + (body || res.statusText) + '. Proceeding with inline mapping for this run.', 'busy');
+        return false;
+      }
       return true;
-    } catch (e) { setStatus('Failed to save mapping: ' + e, 'error'); return false; }
+    } catch (e) {
+      setStatus('Mapping persistence failed: ' + e + '. Proceeding with inline mapping for this run.', 'busy');
+      return false;
+    }
   }
 
   async function startGrooming() {
     if (!groomedState.currentUpload) { setStatus('Upload first.', 'error'); return; }
-    const ok = await persistMappingEdits();
-    if (!ok) return;
+    const mapping = collectCurrentMapping();
+    if (!mapping.description) {
+      setStatus('Cannot run grooming — description column must be mapped.', 'error');
+      return;
+    }
+    // Best-effort persist. Failure is non-fatal — the inline mapping
+    // below is used either way for this groom run.
+    await persistMappingEdits(mapping);
     const upId = groomedState.currentUpload.upload.id;
     const devCount = parseInt($g('groomed-dev-count') && $g('groomed-dev-count').value || '3', 10);
     const progWrap = $g('groomed-progress');
@@ -191,7 +212,16 @@
       const res = await fetch('/api/projects/' + groomedState.projectId + '/groom', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({upload_id: upId, dev_count: devCount, include_prior_stories: true, include_fleet_findings: true}),
+        body: JSON.stringify({
+          upload_id: upId,
+          dev_count: devCount,
+          include_prior_stories: true,
+          include_fleet_findings: true,
+          // Pass the user-edited mapping inline so grooming uses it even if
+          // the PATCH persistence step failed (common on 500+ row uploads
+          // where Supabase times out on the round-trip rewrite).
+          mapping_override: mapping,
+        }),
       });
       const reader = res.body.getReader();
       const decoder = new TextDecoder();

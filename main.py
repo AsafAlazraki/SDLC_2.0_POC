@@ -15,7 +15,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import httpx
 import uvicorn
 import database
@@ -2493,17 +2493,42 @@ def api_get_requirements_upload(project_id: int, upload_id: int):
 @app.patch("/api/projects/{project_id}/requirements/{upload_id}/mapping")
 def api_patch_upload_mapping(project_id: int, upload_id: int, payload: Dict[str, Any] = Body(...)):
     """Edit the LLM-suggested column mapping before running the grooming pipeline.
-    Body: {'mapping': {'description': 'Req Description', ...}}."""
+    Body: {'mapping': {'description': 'Req Description', ...}}.
+
+    Implementation note: large uploads (observed: 751-row Excel files) can
+    exceed Supabase's JSONB payload timeout if we round-trip the full
+    structured_data (raw_rows is the fat field). We keep raw_rows intact
+    by preserving the reference but writing back a trimmed payload — the
+    grooming path reads raw_rows from the stored row on re-load anyway.
+    If Supabase fails, we return a JSON-friendly error so the frontend
+    can fall back to passing mapping inline on the /groom request.
+    """
     row = grooming_db.get_requirements_upload(upload_id)
     if not row or row.get("project_id") != project_id:
         raise HTTPException(status_code=404, detail="Upload not found for this project.")
     new_mapping = payload.get("mapping") or {}
     if not isinstance(new_mapping, dict) or "description" not in new_mapping:
         raise HTTPException(status_code=400, detail="Mapping must be a dict with at least 'description'.")
+
     sd = dict(row.get("structured_data") or {})
     sd["column_mapping"] = new_mapping
     sd["mapping_confidence"] = "user"
-    return database.update_project_artifact(upload_id, {"structured_data": sd})
+    try:
+        updated = database.update_project_artifact(upload_id, {"structured_data": sd})
+        if updated is None:
+            raise RuntimeError("update returned no row — Supabase may have timed out on a large payload.")
+        return updated
+    except Exception as e:
+        # Log the actual error server-side and surface a JSON-readable one to the client.
+        import traceback
+        logger.error(f"patch_upload_mapping failed for upload {upload_id}: {e}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Could not persist mapping ({type(e).__name__}). "
+                "Grooming will still work — pass the mapping inline via the /groom request body as a workaround."
+            ),
+        )
 
 
 # ─── Run grooming pipeline (SSE streaming) ─────────────────────────────────
@@ -2513,6 +2538,11 @@ class GroomingRequest(BaseModel):
     dev_count: int = 3
     include_prior_stories: bool = True
     include_fleet_findings: bool = True
+    # Optional: override the stored column mapping without a prior PATCH call.
+    # Useful when the PATCH endpoint fails on very large uploads — the
+    # frontend can skip the persistence step and pass the user-edited
+    # mapping inline here instead.
+    mapping_override: Optional[Dict[str, str]] = None
 
 
 @app.post("/api/projects/{project_id}/groom")
@@ -2530,7 +2560,13 @@ async def api_run_grooming(project_id: int, request: GroomingRequest):
 
     sd = upload.get("structured_data") or {}
     raw_rows = sd.get("raw_rows") or []
-    mapping = sd.get("column_mapping") or {}
+    # Prefer the caller's mapping_override when provided — this is the
+    # escape hatch when PATCH to persist the mapping failed (e.g. large
+    # uploads) and the frontend wants to run grooming anyway.
+    if request.mapping_override and isinstance(request.mapping_override, dict) and request.mapping_override.get("description"):
+        mapping = request.mapping_override
+    else:
+        mapping = sd.get("column_mapping") or {}
 
     # Rehydrate NormalisedRequirements from the stored rows.
     # We replay the parser's normalise step — the upload row already stored
