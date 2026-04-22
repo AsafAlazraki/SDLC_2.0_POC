@@ -4,7 +4,7 @@ const H = require('./_helpers');
 module.exports = [
   H.h1('14. Integrations'),
 
-  H.p('The platform integrates with three outbound systems in v1.0 and lists four deferred integrations on the roadmap. Every integration follows the same pattern: credentials stored per project, verified before save, called via structured REST clients with retry and circuit-breaker, logged for audit.'),
+  H.p('The platform integrates with three outbound systems in v1.0 and lists four deferred integrations on the roadmap. In OutSystems terms each external system is modelled as a Consumed REST API in BacklogLib, typed via a Structure per request/response shape, called from Server Actions with Timeout set and Effective URL driven by a Site Property. Credentials are per-Project (stored on JiraConfig or pulled from Application Properties for LLM keys), verified before save, called with the platform\'s built-in retry semantics plus our own back-off loop in the BacklogLib.Http_CallWithRetry Server Action, and logged via the standard OutSystems LogMessage action for SIEM forwarding.'),
 
   H.h2('14.1 Anthropic Claude Sonnet 4.6 (drafting + enrichment)'),
   H.bullet('Purpose: Primary drafting engine for BA stories; primary enrichment for PM, Architect, Tech Lead, OS Architect, OS Migration agents; Mentor prompt refinement.'),
@@ -28,19 +28,19 @@ module.exports = [
   H.bullet('Base URL: https://{domain}/rest/api/3'),
   H.bullet('Authentication: HTTP Basic with email:api_token base64-encoded.'),
 
-  H.h3('14.3.1 Endpoints used'),
+  H.h3('14.3.1 Consumed REST API Methods (under Consumed REST API "JiraCloud" in BacklogLib)'),
   H.table(
-    ['Endpoint', 'Method', 'Purpose'],
+    ['REST API Method', 'HTTP Method', 'Purpose'],
     [
-      ['/myself', 'GET', 'Verify credentials on save'],
-      ['/project/{key}', 'GET', 'Verify target project exists and is accessible'],
-      ['/field', 'GET', 'Discover custom field IDs (story points, epic link) — cached on first push'],
-      ['/issue', 'POST', 'Create Epic/Story/Task issue'],
-      ['/issue/{key}', 'PUT', 'Update existing issue (re-push path)'],
-      ['/issueLink', 'POST', 'Create blocks/blocked-by issue links'],
-      ['/sprint?state=closed', 'GET (via Agile API)', 'Fetch historical velocity (Enhancement 8.11.6)'],
+      ['Jira_GetMyself', 'GET /myself', 'Verify credentials on save'],
+      ['Jira_GetProject', 'GET /project/{key}', 'Verify target project exists and is accessible'],
+      ['Jira_GetFields', 'GET /field', 'Discover custom field IDs (Story Points, Epic Link) \u2014 cached via Site Property JiraFieldCacheJson on first push'],
+      ['Jira_CreateIssue', 'POST /issue', 'Create Epic/Story/Task issue'],
+      ['Jira_UpdateIssue', 'PUT /issue/{key}', 'Update existing issue (re-push path)'],
+      ['Jira_CreateIssueLink', 'POST /issueLink', 'Create blocks/blocked-by issue links'],
+      ['JiraAgile_GetClosedSprints', 'GET /rest/agile/1.0/sprint?state=closed', 'Fetch historical velocity (Enhancement 8.11.6)'],
     ],
-    [3200, 1200, 4960],
+    [2800, 2000, 4560],
   ),
 
   H.h3('14.3.2 Issue type + priority mapping'),
@@ -87,8 +87,9 @@ module.exports = [
   ),
 
   H.h2('14.5 Integration Design Principles'),
-  H.bullet('Every outbound call times out after 20 seconds at the HTTP level; the service retries according to policy, then fails the operation cleanly.'),
-  H.bullet('Errors from outbound systems preserve the status code and first ~400 chars of the body so users can diagnose without server access.'),
-  H.bullet('Secrets (API tokens) are stored encrypted; logs NEVER contain secret values, even partial ones.'),
-  H.bullet('Health checks: an Admin endpoint verifies connectivity to each integration per tenant without modifying data (e.g. GET /myself for Jira).'),
+  H.bullet('Every Consumed REST API Method sets its Timeout Property to 20 seconds. The Http_CallWithRetry wrapper Server Action handles retry/backoff above that.'),
+  H.bullet('Errors from outbound systems are caught via OnAfterResponse in the Consumed REST API; Structure IntegrationError captures HTTP status, first \u2248 400 chars of body, and endpoint name. Structures are returned to callers so users can diagnose without server log access.'),
+  H.bullet('Secrets (API tokens, LLM keys) live in Application Properties (encrypted) or JiraConfig.ApiTokenEncrypted (column-encrypted via SecretsHelper). LogMessage calls NEVER include secret values, even partial.'),
+  H.bullet('Health checks: an Admin Screen invokes per-tenant "verify integration" Server Actions (Jira_GetMyself, Anthropic_Ping, Gemini_Ping) that return green/red without modifying data.'),
+  H.bullet('Consumed REST APIs\u2019 Effective URL is driven from a Site Property per environment: AnthropicBaseUrl, GeminiBaseUrl. JiraBaseUrl is per-JiraConfig, composed at call time as "https://" + JiraConfig.Domain + "/rest/api/3".'),
 ];

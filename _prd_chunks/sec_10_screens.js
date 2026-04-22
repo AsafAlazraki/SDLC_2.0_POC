@@ -4,10 +4,15 @@ const H = require('./_helpers');
 module.exports = [
   H.h1('11. Screen Designs'),
 
-  H.p('Textual wireframes for every primary screen. Each screen includes layout, key elements, persona targeted, interaction rules, and edge cases. Detailed component-level specs (button states, focus handling, keyboard shortcuts) are deferred to the design system doc; this section establishes the mental model and content architecture.'),
+  H.p('Textual wireframes for every primary Screen. OutSystems terminology used throughout: a Screen is a navigable URL; a Block is a reusable UI fragment composed into Screens; Widgets are the primitive UI components (Button, Input, Dropdown, Container, Form, Table, etc.) that compose a Block. Layouts below describe the Widget tree at the Screen root. Detailed Widget-level specs (exact Button states, Input validation strings, CSS class hooks) are deferred to the design system artefact; this section establishes the Screen/Block composition and Screen Action behaviour.'),
+
+  H.p('Every Screen in the Backlog_Planner Reactive Web app inherits the organisation\u2019s Layout Block for header/nav chrome. Routing is the standard OutSystems ScreenFlow; URL parameters are listed in Section 12.'),
 
   H.h2('11.1 Project Dashboard'),
-  H.p('Landing page after login. Lists all projects the user has access to. Primary action: create a new project or open an existing one.'),
+  H.h4('Screen'),
+  H.p('ProjectsDashboard — URL /projects. Composed of Layout Block + ProjectCard Block (repeated).'),
+  H.h4('Purpose'),
+  H.p('Landing Screen after login. Lists Project Entities the current User has access to. Primary action: create a new Project or open an existing one.'),
   H.h4('Layout'),
   ...H.code(`┌─ Header: logo, user menu, admin link (if admin) ─────────────┐
 ├─ Left nav: My Projects | Shared Projects | Template Library ──┤
@@ -23,12 +28,16 @@ module.exports = [
 │   [+ New Project] floating action (bottom-right)                │
 └─────────────────────────────────────────────────────────────────┘`),
   H.h4('Behaviour'),
-  H.bullet('Cards sort by most-recently-updated by default; filters never collapse rows, they tint them grey.'),
-  H.bullet('Clicking a card opens the project detail view (11.2).'),
-  H.bullet('Archived projects hidden unless user toggles "Include archived".'),
+  H.bullet('Data Fetch: GetMyProjects Aggregate ordered by UpdatedOn desc; filters applied client-side without re-fetch.'),
+  H.bullet('Clicking a ProjectCard Block fires the OnClick Screen Action \u2192 navigates to ProjectDetail Screen.'),
+  H.bullet('Archived Projects hidden by default; a Switch Widget ("Include archived") toggles the Aggregate filter.'),
+  H.bullet('"+ New Project" Button opens the NewProjectPopup Block; confirmed submission calls the Project_Create Service Action and refreshes the list.'),
 
   H.h2('11.2 Project Detail — Overview Tab'),
-  H.p('Top-level view for a single project. Tab bar exposes the seven domains: Overview, Materials, Runs, Artefacts, Backlog, Groomed Backlog, Documents.'),
+  H.h4('Screen'),
+  H.p('ProjectDetail — URL /projects/{ProjectId}. Composed of Layout Block + ProjectHeader Block + TabBar Block + one of seven tab-specific content Blocks depending on the Tab URL parameter.'),
+  H.h4('Purpose'),
+  H.p('Top-level Screen for a single Project Entity. Tab Bar Widget exposes the seven domains: Overview, Materials, Runs, Artefacts, Backlog, Groomed Backlog, Documents. Each tab swaps the inner content Block via a Reactive client variable.'),
   H.h4('Layout'),
   ...H.code(`┌─ Project header: name, description, chips (client, materials, runs, artefacts, sub-projects) ─┐
 │  [Edit]  [+ Sub-project]  [▶ Run agent fleet]                                                    │
@@ -41,7 +50,10 @@ module.exports = [
 └────────────────────────────────────────────────────────────────────────────────────────────────────┘`),
 
   H.h2('11.3 Upload & Mapping View'),
-  H.p('Entry point for the grooming journey. Shown on the Groomed Backlog tab when the user selects Upload.'),
+  H.h4('Block'),
+  H.p('GroomedBacklog_UploadTab — rendered inside ProjectDetail Screen when Tab=groomed and Sub-view=upload. Composed of: TemplateBanner Block, UploadDropzone Block (wraps the standard OutSystems Upload Widget with drag-and-drop behaviour), MappingPreview Block (Table Widget with editable Dropdown cells), UploadHistory Block (List of ReviewableUploadCard Blocks), LiveProgress Block (shown only while RunEvent.Stage is active).'),
+  H.h4('Purpose'),
+  H.p('Entry point for the grooming journey. The dominant Screen Action is UploadFileOnChange which fires OnChange of the Upload Widget.'),
   H.h4('Layout'),
   ...H.code(`┌─ Groomed Backlog shell (toolbar: Jira config | Push to Jira | Refresh) ─────────┐
 ├─ Sub-tabs: 📥 Upload | 🌳 Hierarchy | 🕸️ Dependencies | 📅 Multi-dev | 🧑 Mentor │
@@ -76,7 +88,10 @@ module.exports = [
 └──────────────────────────────────────────────────────────────────────────────────┘`),
 
   H.h2('11.4 Live Grooming Progress'),
-  H.p('Appears below the mapping preview once the user clicks Start Grooming. Closes when grooming completes; content moves to the status bar and user is auto-switched to Hierarchy.'),
+  H.h4('Block'),
+  H.p('LiveProgress Block — visible while the parent GroomedBacklog_UploadTab Block holds an active RunEvent reference. Composed of: five StageIndicator Widgets (driven by a RefreshData Client Action polling GetGroomingStatus every 3 seconds) plus a ProgressLog List Widget bound to recent log lines stored in a client variable.'),
+  H.h4('Purpose'),
+  H.p('Polling loop visualisation of the Timer-driven pipeline. Polls GetGroomingStatus Service Action every 3 seconds while RunEvent.Stage \u2209 {complete, error}; when terminal, closes the Block and auto-switches the parent to the Hierarchy sub-view via a Client Action.'),
   H.h4('Layout'),
   ...H.code(`┌─ Grooming in progress... ───────────────────────────────────────┐
 │  ● 1. Intake          running   Validating 751 requirements     │
@@ -98,8 +113,11 @@ module.exports = [
   H.bullet('On error event, the errored stage turns red with the message; subsequent stages stay pending.'),
   H.bullet('On stream end without grooming_complete, the overall banner turns amber with "Stream ended unexpectedly; see console".'),
 
-  H.h2('11.5 Story Detail Modal'),
-  H.p('The primary editing surface. Opens in an overlay modal from the Hierarchy view or Mentor prompts list.'),
+  H.h2('11.5 Story Detail Popup'),
+  H.h4('Block'),
+  H.p('StoryDetailPopup — implemented as a Popup (OutSystems UI Popup Widget wrapping a Form Widget). The primary editing surface for a BacklogItem where LevelId=Level.Story. Opens from the Hierarchy tree or Mentor prompts grid.'),
+  H.h4('Purpose'),
+  H.p('Edit all 17 Story Template fields. Each field is a Widget bound to a local variable; Save calls PatchStory Service Action with a StoryPatch Structure; Regenerate Mentor calls RegenerateMentorPrompt Service Action.'),
   H.h4('Layout'),
   ...H.code(`┌─ Story detail — "Authenticate officer via departmental SSO" ────────────[×]─┐
 ├─ Core ─────────────────────────────────────────────────────────────────────┤
@@ -134,7 +152,10 @@ module.exports = [
 └────────────────────────────────────────────────────────────────────────────┘`),
 
   H.h2('11.6 Hierarchy Tree View'),
-  H.p('The default view after grooming completes. Nested collapsible tree of Epic → Feature → Story with story badges.'),
+  H.h4('Block'),
+  H.p('GroomedBacklog_HierarchyTab — renders GetGroomedTree Service Action output via a recursive Block pattern (EpicCard Block \u2192 nested FeatureCard Blocks \u2192 nested StoryCard Blocks). Each card uses Container Widgets for layout, Badge Widgets for metadata chips, and fires the OnClick Screen Action to open the appropriate Popup.'),
+  H.h4('Purpose'),
+  H.p('Default sub-view after grooming completes. Uses OutSystems\u2019 Expandable Widget pattern (Chevron + Toggle) for collapsing Epics and Features.'),
   H.h4('Layout'),
   ...H.code(`▼ EPIC: Authentication & Access
     Securely authenticate officers; enforce role-based access
@@ -147,7 +168,10 @@ module.exports = [
   ...`),
 
   H.h2('11.7 Dependency Graph View'),
-  H.p('Mermaid-rendered flowchart. Nodes coloured by priority or critical-path membership. Clickable to open story detail.'),
+  H.h4('Block'),
+  H.p('GroomedBacklog_DependencyTab — composed of a DependencyGraphRenderer Block backed by a thin Extension (JavaScript Node) that wraps a Mermaid library loaded as an Embedded Resource. The Extension exposes a single Client Action RenderMermaid(Source: Text, ContainerId: Text).'),
+  H.h4('Purpose'),
+  H.p('Read-only dependency visualisation. Nodes coloured by PriorityId or critical-path membership (computed server-side in GetDependencyGraph Service Action and passed as graph attributes). Node click is wired via a JS Node callback to a parent Client Action that opens the StoryDetailPopup.'),
   H.h4('Layout (rendered Mermaid)'),
   ...H.code(`graph LR
     n1["Authenticate officer via dept SSO<br/><small>5 pts</small>"]:::critical
@@ -160,7 +184,10 @@ module.exports = [
   H.bullet('Hovering a node shows the first line of the story; click navigates to the story detail modal.'),
 
   H.h2('11.8 Multi-Dev Schedule View'),
-  H.p('Per-developer Gantt-style lanes, bars positioned by points, with critical path distinguished. Controls above for dev count, sprint capacity, and "What-if" simulator launch.'),
+  H.h4('Block'),
+  H.p('GroomedBacklog_ScheduleTab — Gantt rendered as SVG generated by a Server-side Client Action using positions computed by SchedulerMath in BacklogLib. Controls Widgets (NumberBox for Devs, NumberBox for Sprint Capacity, Button for Re-compute, Button for Open What-If) sit above. No Extension required — SVG string interpolated into a Container via the Expression Widget with EscapeHTML=False.'),
+  H.h4('Purpose'),
+  H.p('Per-developer lanes, bars positioned by points. Critical-path bars rendered with a different fill via ScheduleAssignment.IsOnCriticalPath. The What-If Simulator Popup is separate (Section 11.12).'),
   H.h4('Layout'),
   ...H.code(`┌─ Controls ───────────────────────────────────────────────────┐
 │  Devs [3]  Sprint cap [13]  [Re-compute]  [Open What-If]       │
@@ -175,10 +202,14 @@ module.exports = [
 └──────────────────────────────────────────────────────────────────┘`),
 
   H.h2('11.9 Mentor Prompts View'),
-  H.p('Grid of cards, one per story. Each card shows title, prompt length, first 220 characters. Click opens the story detail modal scrolled to the Mentor prompt section.'),
+  H.h4('Block'),
+  H.p('GroomedBacklog_MentorTab — List Records Widget iterating over BacklogItems where LevelId=Level.Story, wrapped in MentorPromptCard Blocks. Each card shows Title, a character count, and the first 220 characters of the PromptText attribute. OnClick opens StoryDetailPopup with focus on the Mentor section via a local scroll-to-hash trick.'),
 
-  H.h2('11.10 Jira Config Modal'),
-  H.p('Modal overlay triggered from the Groomed Backlog toolbar. Test-before-save behaviour.'),
+  H.h2('11.10 Jira Config Popup'),
+  H.h4('Block'),
+  H.p('JiraConfigPopup — Popup Widget triggered from the GroomedBacklog toolbar. Form Widget with Input Widgets for Domain, Email, ApiToken (Input Password), and JiraProjectKey. Test & Save Button fires the SaveJiraConfig Service Action which verifies credentials against Jira /myself and /project/{key} Consumed REST API Methods before persisting.'),
+  H.h4('Purpose'),
+  H.p('Test-before-save behaviour: any non-2xx response from either verification call aborts the save and surfaces the Jira error in a Feedback Message Widget.'),
   H.h4('Layout'),
   ...H.code(`┌─ Jira configuration ─────────────────────────────────────────[×]─┐
 │  Atlassian domain   [acme.atlassian.net_____________]             │
@@ -195,7 +226,10 @@ module.exports = [
   H.bullet('Clear button requires a second confirm; logs an audit event.'),
 
   H.h2('11.11 Approval Inbox (NEW)'),
-  H.p('Stakeholder view reached via tokenised link (no full login required). Shows the epics/features they were asked to approve.'),
+  H.h4('Screen'),
+  H.p('ApprovalInbox_Tokenised — anonymous Screen, URL /approvals/{UrlToken}. Identified by URL token only; no authentication required. Composed of Layout Block (slimmed — no user menu, no global nav) + ApprovalItem Block repeated for every BacklogItem under the ApprovalRequest\u2019s target.'),
+  H.h4('Purpose'),
+  H.p('Stakeholder review surface. Screen Preparation action validates the UrlToken against the ApprovalRequest Entity (non-expired, status=pending) and redirects to ApprovalExpired Screen if invalid.'),
   H.h4('Layout'),
   ...H.code(`┌─ QPS Weapons Licence Management — your review is requested ─┐
 │  Hi Clive,                                                    │
@@ -212,7 +246,10 @@ module.exports = [
 └────────────────────────────────────────────────────────────────┘`),
 
   H.h2('11.12 What-If Simulator (NEW)'),
-  H.p('Overlay view accessed from the Multi-Dev Schedule. Live sliders + toggles update a preview Gantt in real time. Apply or Discard at the end.'),
+  H.h4('Block'),
+  H.p('WhatIfPopup — Popup Widget launched from GroomedBacklog_ScheduleTab. Sliders implemented via the Slider Widget (OutSystems UI); toggles via CheckBox. Every input change fires a Client Action that calls SimulateScheduleWhatIf Service Action and re-renders the preview SVG without mutating the persistent BacklogItem rows.'),
+  H.h4('Purpose'),
+  H.p('Live "what if we had more devs / changed priorities / dropped an Epic" exploration. Save Scenario persists the input tuple to a client-scoped store (no Entity needed for v1.0); Apply writes changes to BacklogItem via PatchStory for each affected Story.'),
   H.h4('Layout'),
   ...H.code(`┌─ What-If Simulator ──────────────────────────────────────────[×]─┐
 │  Base schedule: 9 sprints · 4 devs · 13 pts/sprint                │

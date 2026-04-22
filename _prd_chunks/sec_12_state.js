@@ -4,7 +4,9 @@ const H = require('./_helpers');
 module.exports = [
   H.h1('13. State Machines'),
 
-  H.p('Four core entities have non-trivial lifecycles. Each is documented as a state table: current state × event → next state + side effect. Illegal transitions MUST be rejected by the service tier; direct database writes are prohibited except via the defined transitions.'),
+  H.p('Four Entities have non-trivial lifecycles. OutSystems does not ship a dedicated state-machine engine; the idiomatic pattern is a Reference Attribute pointing at a Static Entity (e.g. BacklogItem.StatusId \u2192 ItemStatus) plus guard logic inside the Server Actions that transition rows. This section specifies each state machine as a transition table — current state \u00d7 event \u2192 next state + side effect — to be implemented as a set of Server Actions that wrap every write. Direct Entity UPDATE outside those Server Actions is prohibited.'),
+
+  H.p('Implementation pattern for every state machine: a Server Action BacklogItem_TransitionTo(ItemId, NewStatusId, EventContext) which (a) fetches the current row, (b) validates the transition against the table below, (c) applies side effects, (d) writes the Entity update, (e) writes an audit row. Illegal transitions raise an Exception that the UX surfaces as a Feedback Message.'),
 
   H.h2('13.1 Requirement Row Lifecycle'),
   H.p('Individual requirement rows move through states as the user reviews uploads and runs grooming.'),

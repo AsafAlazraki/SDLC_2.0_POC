@@ -123,9 +123,23 @@ module.exports = [
 
   H.p('Service API versioning: Backlog_Planner consumes BacklogCore via versioned Service APIs. Breaking changes in BacklogCore require a new major version of the Service API; Backlog_Planner can pin a specific version during migration windows.'),
 
-  H.h2('18.5 Service Actions (BacklogCore)'),
+  H.h2('18.5 Action Taxonomy'),
+  H.p('Before listing Service Actions per module, clarify which OutSystems Action Type each operation uses. The platform uses four Action Types:'),
+  H.table(
+    ['Action Type', 'Where it lives', 'Visibility', 'Typical use in this platform'],
+    [
+      ['Screen Action', 'Inside a Screen / Block in Backlog_Planner', 'Local to the Screen', 'Button OnClick, Form OnSubmit, Input OnChange — orchestrates local UI state + invokes Service Actions'],
+      ['Client Action', 'Client Actions folder in Backlog_Planner (or a Block)', 'Reusable within the Reactive Web app', 'Shared UI logic — polling loops, SVG renderers, clipboard helpers, scroll-to-hash'],
+      ['Server Action', 'BacklogCore or BacklogLib', 'Internal to the module', 'Business logic, Entity CRUD, integration wrappers — NOT exposed outside the module'],
+      ['Service Action', 'BacklogCore', 'Exposed to consumers via the Service API', 'Every operation Backlog_Planner invokes on the Core — see Section 18.5.1 onwards'],
+    ],
+    [1800, 2200, 1800, 3560],
+  ),
+  H.p('Additionally, BacklogCore exposes no Exposed REST APIs in v1.0 — the Backlog_Planner app is its sole consumer and uses the tighter OutSystems Service API binding instead. Should future integrations need external access (e.g. a Jenkins pipeline triggering grooming), an Exposed REST API is added as a v1.1 enhancement.'),
 
-  H.h3('18.5.1 Requirements_Service'),
+  H.h2('18.5.1 Service Actions (BacklogCore)'),
+
+  H.h3('Requirements_Service'),
   H.table(
     ['Action', 'Input', 'Output', 'Notes'],
     [
@@ -139,7 +153,7 @@ module.exports = [
     [2000, 2600, 2500, 2260],
   ),
 
-  H.h3('18.5.2 Grooming_Service'),
+  H.h3('Grooming_Service'),
   H.table(
     ['Action', 'Input', 'Output', 'Notes'],
     [
@@ -158,7 +172,7 @@ module.exports = [
     [2200, 3000, 2400, 1760],
   ),
 
-  H.h3('18.5.3 Jira_Integration_Service'),
+  H.h3('Jira_Integration_Service'),
   H.table(
     ['Action', 'Input', 'Output', 'Notes'],
     [
@@ -172,7 +186,7 @@ module.exports = [
     [2400, 3200, 2400, 1360],
   ),
 
-  H.h3('18.5.4 Approval_Service (NEW in v1.0)'),
+  H.h3('Approval_Service (NEW in v1.0)'),
   H.table(
     ['Action', 'Input', 'Output', 'Notes'],
     [
@@ -184,6 +198,49 @@ module.exports = [
     ],
     [2200, 3200, 2400, 1560],
   ),
+
+  H.h2('18.5.2 Structures (DTOs exposed through Service APIs)'),
+  H.p('Every Service Action input/output uses strongly-typed OutSystems Structures rather than loose Text fields or generic JSON blobs. Structures live in BacklogCore.DataTypes and are referenced by both the Service API and by BacklogLib Server Actions so there is a single source of truth. A complete list of Structures is in Section 10.6. Design principles:'),
+  H.bullet('Structures with 4+ Attributes get their own name. Structures with 1\u20132 Attributes become simple Input/Output Parameters of the Service Action itself.'),
+  H.bullet('Lists of Structures use the platform\u2019s built-in List<Structure> type; no custom collection wrappers.'),
+  H.bullet('Optional fields carry defaults (empty Text, 0 for Integer, NullIdentifier()) rather than being \u201cnot mandatory\u201d \u2014 mandatory = True is the default for every Attribute.'),
+  H.bullet('Structures with fields that are Identifiers into Static Entities use the Identifier type directly (e.g. Priority Identifier) so client code gets compile-time type safety for the static records.'),
+
+  H.h2('18.5.3 Aggregates vs Advanced SQL'),
+  H.p('The platform uses Aggregates (OutSystems\u2019 visual query builder) as the default. Advanced SQL is reserved for two cases:'),
+  H.bullet('The recursive Epic\u2192Feature\u2192Story tree query (GetGroomedTree) \u2014 implemented as an Advanced SQL using a CTE. Wrapping it in a Server Action with the tree Structure as output keeps consumers oblivious.'),
+  H.bullet('The semantic-similarity duplicate detection (Enhancement 8.11.1) \u2014 uses a pgvector extension or a dedicated Embedding Entity with a similarity-sorted Advanced SQL query; the Aggregate builder cannot express cosine distance.'),
+  H.p('All other queries (list uploads for a project, list stories by status, fetch current Mentor prompt, etc.) are Aggregates. Use TypedExecute for Advanced SQL calls so the output Record Type is verified by the compiler.'),
+
+  H.h2('18.5.4 Site Properties and Application Properties'),
+  H.p('Configuration that varies per environment is stored in Site Properties on BacklogLib or BacklogCore. Configuration that varies per Application installation (one App per customer tenant) goes in Application Properties. Both are set via the ODC Portal after deployment.'),
+  H.table(
+    ['Property', 'Kind', 'Default', 'Notes'],
+    [
+      ['AnthropicBaseUrl', 'Site Property', 'https://api.anthropic.com/v1', 'Effective URL for the Anthropic Consumed REST API'],
+      ['GeminiBaseUrl', 'Site Property', 'https://generativelanguage.googleapis.com/v1', ''],
+      ['AnthropicModel', 'Site Property', 'claude-sonnet-4-6', 'Bump here to change model version'],
+      ['GeminiModel', 'Site Property', 'gemini-2.0-flash', ''],
+      ['AnthropicApiKey', 'Application Property', '(set at install)', 'Per-tenant key; encrypted'],
+      ['GeminiApiKey', 'Application Property', '(set at install)', ''],
+      ['MaxFileUploadMb', 'Site Property', '10', 'Mirrors NFR-PERF limits'],
+      ['MaxRowsHard', 'Site Property', '5000', ''],
+      ['MaxRowsWarn', 'Site Property', '1000', ''],
+      ['GroomingTimerIntervalSeconds', 'Site Property', '5', 'How often the grooming Timer re-activates'],
+      ['JiraFieldCacheJson', 'Site Property', '{}', 'Cached field-name \u2192 field-id map per Jira instance; updated by Jira_GetFields'],
+      ['MentorPromptHistoryCap', 'Site Property', '3', ''],
+      ['RefinementHistoryCap', 'Site Property', '10', ''],
+      ['ApprovalTokenExpiryDays', 'Site Property', '30', ''],
+      ['SmtpSenderEmail', 'Application Property', '(set at install)', 'Approval emails From address'],
+    ],
+    [2800, 2200, 2400, 1960],
+  ),
+
+  H.h2('18.5.5 Events and Workflow Builder'),
+  H.p('Two cross-module communication points use Events rather than direct Service Action calls:'),
+  H.bullet('Grooming_Completed Event \u2014 fired by Grooming_Service when a run ends (complete or error). Backlog_Planner subscribes and refreshes the open Screen if a user is viewing that Project.'),
+  H.bullet('Backlog_Pushed_To_Jira Event \u2014 fired after a successful Jira push. Future consumers (notifications app, analytics app) can subscribe without us re-wiring.'),
+  H.p('Workflow Builder (the ODC replacement for BPT) is NOT used in v1.0 for the grooming pipeline \u2014 the Timer-driven state machine is simpler and well-understood. Workflow Builder is the recommended upgrade path if the pipeline grows to include human-in-the-loop mid-run tasks (e.g. approve each epic as it\u2019s clustered).'),
 
   H.h2('18.6 Forge Component Shortlist'),
 

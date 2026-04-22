@@ -90,7 +90,7 @@ module.exports = [
 
   // ─── 8.3 Story Template Management ───────────────────────────────────
   H.h2('8.3 Story Template Management'),
-  H.p('The story template is the field contract the grooming pipeline produces against and the story detail modal edits against. It is an ordered list of field descriptors with type, validation, and (where applicable) Jira mapping.'),
+  H.p('The story template is the field contract the grooming pipeline produces against and the story detail Popup edits against. It is an ordered list of field descriptors with type, validation, and (where applicable) Jira mapping.'),
 
   H.h3('8.3.1 Default Template'),
   H.p('The default template ships with 17 fields in 4 groups. It encodes industry best practices: Connextra-format user story, Given/When/Then acceptance criteria, Fibonacci story points, MoSCoW priority. Full field specification in Appendix B.'),
@@ -220,9 +220,9 @@ data: {"stage": "cluster", "message": "Sonnet returned malformed JSON after 2 at
     [
       ['FR-8.5.1', 'The system MUST render the groomed backlog as a collapsible Epic → Feature → Story tree.', 'Must', 'Each level is individually collapsible'],
       ['FR-8.5.2', 'Each story MUST display badges for type, priority, point value, dependency count, and ODC entity chips.', 'Must', 'Visual signal at tree level without opening the story'],
-      ['FR-8.5.3', 'Clicking any story MUST open the Story Detail modal.', 'Must', 'Screen spec in Section 11.5'],
-      ['FR-8.5.4', 'Stories MUST be editable across all template fields from the detail modal.', 'Must', 'PATCH /api/projects/{id}/backlog-items/{itemId}'],
-      ['FR-8.5.5', 'Epics and Features MUST be editable (title, description).', 'Should', 'Same PATCH endpoint; level preserved'],
+      ['FR-8.5.3', 'Clicking any story MUST open the Story Detail Popup.', 'Must', 'Screen spec in Section 11.5'],
+      ['FR-8.5.4', 'Stories MUST be editable across all template fields from the detail Popup.', 'Must', 'PATCH /api/projects/{id}/backlog-items/{itemId}'],
+      ['FR-8.5.5', 'Epics and Features MUST be editable (title, description).', 'Should', 'Same PATCH Service Action; level preserved'],
       ['FR-8.5.6', 'Stories without a parent epic (orphans) MUST be rendered in a dedicated "Unassigned" section at the bottom.', 'Should', 'Only populated when user manually creates stories or agents fail to cluster a requirement'],
       ['FR-8.5.7', 'The system MUST allow a user to delete (soft-delete) any level.', 'Must', 'Soft-deleted items archived; cascade to children optional, user-prompted'],
       ['FR-8.5.8', 'The system MUST allow a user to re-parent a story to a different feature or epic.', 'Should', 'Drag-and-drop in tree view; validation warns on orphaning'],
@@ -302,7 +302,7 @@ data: {"stage": "cluster", "message": "Sonnet returned malformed JSON after 2 at
       ['FR-8.8.1', 'The system MUST generate a Mentor prompt for every groomed story during the Sequence stage.', 'Must', ''],
       ['FR-8.8.2', 'The prompt MUST be Markdown-formatted, rendered as plain text to a monospace viewer.', 'Must', 'Copy-to-clipboard keeps formatting'],
       ['FR-8.8.3', 'The prompt MUST reference the project’s OutSystems Architect blueprint when available.', 'Must', 'Distinguishing value-add vs generic prompts'],
-      ['FR-8.8.4', 'The prompt MUST be regeneratable from the story detail modal.', 'Must', 'POST /api/projects/{id}/backlog-items/{id}/mentor-prompt/regenerate'],
+      ['FR-8.8.4', 'The prompt MUST be regeneratable from the story detail Popup.', 'Must', 'POST /api/projects/{id}/backlog-items/{id}/mentor-prompt/regenerate'],
       ['FR-8.8.5', 'The system MUST keep the last 3 versions of each story’s prompt. Older versions are discarded.', 'Must', 'Learned from reference implementation; users iterate the prompt and want to revert'],
       ['FR-8.8.6', 'The system MUST expose a prominent "Copy to Clipboard" action on the prompt.', 'Must', ''],
       ['FR-8.8.7', 'The system SHOULD expose a bulk export: all Mentor prompts in the backlog as a single Markdown document with per-story section headers.', 'Should', 'NEW — useful for batch developer handover'],
@@ -390,8 +390,8 @@ data: {"stage": "cluster", "message": "Sonnet returned malformed JSON after 2 at
   H.bullet('FR-8.11.2.3 — Clicking a score MUST show the specific reason(s) for the deduction.'),
 
   H.h3('8.11.3 Inline AI Refinement'),
-  H.p('In the story detail modal, the BA can enter a natural-language instruction ("make the AC more specific about error handling") and a focused agent call refines the story accordingly. The interaction is conversational — each refinement message appends to a per-story refinement history.'),
-  H.bullet('FR-8.11.3.1 — The story detail modal MUST expose a "Refine with AI" panel with a text input, submit button, and scrollable history.'),
+  H.p('In the story detail Popup, the BA can enter a natural-language instruction ("make the AC more specific about error handling") and a focused agent call refines the story accordingly. The interaction is conversational — each refinement message appends to a per-story refinement history.'),
+  H.bullet('FR-8.11.3.1 — The story detail Popup MUST expose a "Refine with AI" panel with a text input, submit button, and scrollable history.'),
   H.bullet('FR-8.11.3.2 — Each refinement MUST call the BA enrichment agent with the current story state + the instruction, and propose diffs the user accepts or rejects.'),
   H.bullet('FR-8.11.3.3 — Accepted refinements MUST update the story fields and append a refinement_history entry.'),
   H.bullet('FR-8.11.3.4 — Refinement history MUST be capped at the last 10 entries per story.'),
@@ -432,7 +432,7 @@ data: {"stage": "cluster", "message": "Sonnet returned malformed JSON after 2 at
   H.bullet('FR-8.11.7.2 — The user MUST be able to toggle: dev count, sprint capacity, inclusion/exclusion of specific epics or features, priority overrides per story.'),
   H.bullet('FR-8.11.7.3 — Changes MUST recompute the schedule and critical path within 200 ms (target) on a 500-story backlog.'),
   H.bullet('FR-8.11.7.4 — Users MUST be able to save a scenario with a name for later recall or sharing.'),
-  H.bullet('FR-8.11.7.5 — "Accept this scenario" MUST apply the changes to the persistent backlog (with confirmation modal).'),
+  H.bullet('FR-8.11.7.5 — "Accept this scenario" MUST apply the changes to the persistent backlog (with confirmation Popup).'),
 
   H.h3('8.11.8 Requirement Coverage Heatmap'),
   H.p('A visual matrix answering: for each original requirement, which story or stories derived from it? Which requirements produced zero stories (coverage gaps)?'),
