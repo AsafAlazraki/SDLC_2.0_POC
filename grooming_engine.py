@@ -354,10 +354,18 @@ async def stage_cluster(
     prior_groomed_summary: str = "",
     fleet_findings_summary: str = "",
 ) -> Dict[str, Any]:
-    """Return the clustered Epic→Feature→requirement_ids tree."""
+    """Return the clustered Epic→Feature→requirement_ids tree.
+
+    Strategy for large inputs: we cap the prompt at ~200 requirements worth
+    of detail. On a 700+ row upload this means most rows are summarised only
+    by count, with the LLM clustering on the visible sample and any patterns
+    from the IDs/priority columns. For truly large uploads the caller should
+    chunk before calling us — this is a v1 simplification.
+    """
+    logger.info(f"[cluster] starting with {len(reqs)} requirements")
     prompt = _CLUSTER_PROMPT.format(
         count=len(reqs),
-        requirements_block=_requirements_block(reqs),
+        requirements_block=_requirements_block(reqs, cap=200),
         prior_context=(
             f"PRIOR GROOMING ON THIS PROJECT — preserve epic themes where sensible, flag new ones:\n{prior_groomed_summary}\n"
             if prior_groomed_summary else ""
@@ -367,11 +375,42 @@ async def stage_cluster(
             if fleet_findings_summary else ""
         ),
     )
-    text, _usage = await _sonnet_call(prompt, anthropic_api_key, max_tokens=6000)
+    logger.info(f"[cluster] prompt size: {len(prompt):,} chars")
+
+    try:
+        text, _usage = await _sonnet_call(prompt, anthropic_api_key, max_tokens=10_000)
+    except Exception as e:
+        logger.exception(f"[cluster] Sonnet call failed: {e}")
+        return {"epics": [], "orphan_requirement_ids": [r.id for r in reqs], "_error": str(e)}
+
+    logger.info(f"[cluster] got {len(text):,} chars of response")
     parsed = _extract_json(text)
+
     if not isinstance(parsed, dict) or "epics" not in parsed:
-        logger.warning(f"Cluster stage returned malformed JSON: {text[:400]}")
+        logger.warning(
+            f"[cluster] malformed JSON. First 600 chars of response:\n{text[:600]}\n"
+            f"Last 300 chars:\n{text[-300:]}"
+        )
+        # One retry with a corrective nudge — common model mistakes are a
+        # stray preamble ("Here is the JSON:") or a trailing explanation.
+        retry_prompt = (
+            prompt
+            + "\n\nIMPORTANT: Your previous response was not valid JSON. Return ONLY a single JSON object starting with { and ending with }. No prose, no code fences, no explanation."
+        )
+        try:
+            text2, _ = await _sonnet_call(retry_prompt, anthropic_api_key, max_tokens=10_000)
+            parsed2 = _extract_json(text2)
+            if isinstance(parsed2, dict) and "epics" in parsed2:
+                logger.info("[cluster] retry succeeded")
+                return parsed2
+            logger.warning(f"[cluster] retry also failed. Response head: {text2[:400]}")
+        except Exception as e:
+            logger.warning(f"[cluster] retry raised: {e}")
         return {"epics": [], "orphan_requirement_ids": [r.id for r in reqs]}
+
+    epic_count = len(parsed.get("epics") or [])
+    feature_count = sum(len(e.get("features") or []) for e in (parsed.get("epics") or []))
+    logger.info(f"[cluster] success: {epic_count} epic(s), {feature_count} feature(s)")
     return parsed
 
 

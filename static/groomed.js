@@ -223,9 +223,24 @@
           mapping_override: mapping,
         }),
       });
+      // If the POST itself fails (4xx/5xx BEFORE the SSE stream starts), Python
+      // sends a JSON body we want to surface. EventSourceResponse doesn't
+      // normally produce a non-200, but FastAPI can still return an error
+      // response for uncaught exceptions in the endpoint wrapper.
+      if (!res.ok) {
+        const errBody = await res.text().catch(function(){ return res.statusText; });
+        setStatus('Grooming request rejected (' + res.status + '): ' + (errBody || res.statusText).substring(0, 400), 'error');
+        return;
+      }
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
+      // Track what we actually observed so the end-of-stream status is HONEST.
+      let eventsSeen = 0;
+      let completedEvent = null;
+      let lastError = null;
+      let epicCountFromComplete = 0;
       while (true) {
         const {value, done} = await reader.read();
         if (done) break;
@@ -238,14 +253,49 @@
           else if (line.startsWith('data: ')) {
             const raw = line.slice(6).trim();
             if (!evName || !raw) continue;
-            try { handleGroomingEvent(evName, JSON.parse(raw), stageEls, progLog); } catch (e) { console.warn('groom event', e, raw); }
+            eventsSeen++;
+            let parsed = null;
+            try { parsed = JSON.parse(raw); } catch (e) { console.warn('groom event parse failed', e, raw); }
+            // Log every event so server-side behaviour is debuggable from devtools
+            console.log('[groom]', evName, parsed);
+            if (parsed) {
+              if (evName === 'grooming_complete') {
+                completedEvent = parsed;
+                epicCountFromComplete = parsed.epic_count || 0;
+              } else if (evName === 'grooming_error') {
+                lastError = parsed;
+              }
+              try { handleGroomingEvent(evName, parsed, stageEls, progLog); }
+              catch (e) { console.warn('groom event handler', e, parsed); }
+            }
             evName = null;
           }
         }
       }
-      setStatus('Grooming complete — switch tabs to see result.', 'success');
+
+      // Honest end-of-stream status based on what actually happened.
+      if (eventsSeen === 0) {
+        setStatus('Grooming produced no events — the server likely errored before yielding. Check the server terminal for the traceback.', 'error');
+        return;
+      }
+      if (lastError && !completedEvent) {
+        setStatus('Grooming failed at stage "' + (lastError.stage || '?') + '": ' + (lastError.message || 'unknown'), 'error');
+        return;
+      }
+      if (!completedEvent) {
+        setStatus('Stream ended without grooming_complete event (saw ' + eventsSeen + ' events). Check devtools console for the sequence.', 'error');
+        return;
+      }
+      if (epicCountFromComplete === 0) {
+        setStatus('Grooming finished but produced 0 epics. The cluster stage likely returned empty JSON from the LLM — check server logs. Raw complete event in console.', 'error');
+        return;
+      }
+      setStatus('Grooming complete — ' + epicCountFromComplete + ' epic(s), ' + (completedEvent.feature_count || 0) + ' feature(s), ' + (completedEvent.story_count || 0) + ' story(ies). Switch tabs to see result.', 'success');
       switchGroomedView('tree');
-    } catch (e) { setStatus('Grooming failed: ' + e, 'error'); }
+    } catch (e) {
+      console.error('groom fetch', e);
+      setStatus('Grooming failed: ' + e, 'error');
+    }
   }
 
   function handleGroomingEvent(evName, data, stageEls, logEl) {
