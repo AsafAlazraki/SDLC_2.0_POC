@@ -1,0 +1,51 @@
+// Section 19 — Glossary
+const H = require('./_helpers');
+
+module.exports = [
+  H.h1('19. Glossary'),
+
+  H.p('Definitions of terms used throughout this document. Platform-specific terminology is defined as used in the context of OutSystems Developer Cloud and Atlassian Jira Cloud.'),
+
+  H.table(
+    ['Term', 'Definition'],
+    [
+      ['ADF', 'Atlassian Document Format — the rich-text JSON structure Jira uses for the description field. Our Jira client wraps plain text in a minimal ADF paragraph.'],
+      ['AI Agent (OutSystems)', 'Managed LLM integration within ODC; can be invoked via Service Actions. Alternative to our BacklogLib.LlmClient library when available.'],
+      ['BacklogCore', 'The Core-layer OutSystems application housing all Service Actions and Entities for this platform.'],
+      ['BacklogItem', 'The unified Entity representing Epics, Features, and Stories, disambiguated by Level.'],
+      ['BacklogLib', 'The Foundation-layer OutSystems library housing reusable helpers (parser, LLM client, Jira client, scheduler maths, secrets).'],
+      ['Backlog_Planner', 'The End-User-layer OutSystems Reactive Web application delivering the UI.'],
+      ['BDD', 'Behaviour-Driven Development. The .feature Gherkin export from Enhancement 8.11.9 is intended for BDD tooling.'],
+      ['Blueprint (OutSystems)', 'The output of the OutSystems Architect fleet agent — a structured description of the project’s entities, service actions, and screens. Fed into the Mentor prompt generator.'],
+      ['Connextra', 'The "As a [persona], I want to [action], so that [value]" user-story format.'],
+      ['Critical Path', 'The longest chain of dependent stories in the dependency DAG; delays on any story in this chain delay the whole project.'],
+      ['Discovery Engine', 'The SDLC Discovery Engine — the reference Python platform that Phase 12 was built within. This rebuild preserves Phase 12 but migrates it to OutSystems.'],
+      ['DoD', 'Definition of Done. Per-story acceptance criteria for the engineering team.'],
+      ['Enrichment Stage', 'The 4th stage of the grooming pipeline where PM, Architect, Tech Lead, OS Architect, and OS Migration agents add their perspectives to each story.'],
+      ['ETA (grooming)', 'Estimated time to grooming_complete, shown as a banner during the pipeline based on requirement count.'],
+      ['Forge', 'OutSystems’ public component marketplace.'],
+      ['Gemini', 'Google’s Gemini 2.0 Flash model, used for column auto-detection, clustering (when cost-optimised), and vision.'],
+      ['Gherkin', 'The Given/When/Then notation standardised by Cucumber, used for acceptance criteria across this document.'],
+      ['Grooming', 'The act of transforming raw requirements into a structured Epic/Feature/Story backlog. The five-stage pipeline is the grooming process.'],
+      ['IssueLink (Jira)', 'A typed relationship between two Jira issues; Blocks / Is blocked by is the type used for story dependencies.'],
+      ['LLM', 'Large Language Model. Used for drafting, enrichment, clustering, refinement, and column detection.'],
+      ['MoSCoW', 'A priority scheme: Must have / Should have / Could have / Won’t have. Used as the primary priority scale.'],
+      ['NFR', 'Non-Functional Requirement. Cross-cutting quality attribute: performance, security, accessibility, etc.'],
+      ['ODC', 'OutSystems Developer Cloud — the customer’s target platform.'],
+      ['ODC Mentor 2.0', 'The AI coding assistant within ODC; consumes a Markdown prompt and produces OutSystems code scaffolds.'],
+      ['O11', 'OutSystems 11 — the classic, self-hosted OutSystems platform. Not the target for this rebuild.'],
+      ['PATCH (HTTP)', 'HTTP method for partial updates. Used on the /mapping endpoint to avoid round-tripping large payloads.'],
+      ['Personas', 'The four primary users (BA, PO, Developer, EM) plus two secondary (Customer, Architect) described in Section 5.'],
+      ['Reactive Web', 'The OutSystems UI framework for browser-facing web apps; preferred for the Backlog_Planner app.'],
+      ['Requirement', 'One row in the customer’s uploaded spreadsheet. The atomic unit of input to the grooming pipeline.'],
+      ['SSE', 'Server-Sent Events. The streaming protocol the reference implementation uses to stream grooming progress. Replaced by polling in the ODC rebuild.'],
+      ['Service Action (OutSystems)', 'The OutSystems equivalent of a server-side function/endpoint. BacklogCore exposes these to Backlog_Planner.'],
+      ['Sonnet (Claude)', 'Anthropic Claude Sonnet 4.6 — the primary LLM for drafting and enrichment stages.'],
+      ['Template override', 'A per-project modification of the default 17-field story template.'],
+      ['Timer (OutSystems)', 'Platform primitive for asynchronous/scheduled execution. Used to drive the grooming pipeline state machine.'],
+      ['What-If Simulator', 'The interactive schedule-modelling view (Enhancement 8.11.7).'],
+      ['Workflow Builder', 'ODC’s modern replacement for BPT. Alternative to Timer-driven orchestration; evaluated but Timer chosen for v1.0 simplicity.'],
+    ],
+    [2600, 6760],
+  ),
+];

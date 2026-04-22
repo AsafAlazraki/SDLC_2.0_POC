@@ -1,0 +1,76 @@
+// Section 6 — Scope
+const H = require('./_helpers');
+
+module.exports = [
+  H.h1('6. Scope'),
+
+  H.p('Scope is explicit. Items listed In Scope are delivered in v1.0. Items listed Out of Scope are captured for awareness and may appear on the post-v1.0 roadmap, but will not block v1.0 release.'),
+
+  H.h2('6.1 In Scope for v1.0'),
+  H.table(
+    ['#', 'Capability', 'Notes'],
+    [
+      ['IS-1', 'Project workspace with materials, runs, and artefacts tabs', 'Reuses the existing Discovery Engine project concept'],
+      ['IS-2', 'CSV and Excel (.xlsx, .xlsm) requirements upload', '.xls legacy format explicitly not supported'],
+      ['IS-3', 'LLM-based column auto-detection with heuristic fallback', 'Gemini primary, Claude fallback, rule-based ultimate fallback'],
+      ['IS-4', 'Editable column mapping preview before grooming', 'User can override any field'],
+      ['IS-5', 'Five-stage agent grooming pipeline (Intake → Cluster → Draft → Enrich → Sequence)', 'All six agents run: BA, PM, Architect, Tech Lead, OS Architect, OS Migration'],
+      ['IS-6', 'Epic → Feature → Story hierarchy with editable attributes', 'Three-level hierarchy; sub-tasks not in scope'],
+      ['IS-7', '17-field story template with per-project override', 'Core, Planning, Quality, ODC groups; users may edit the override'],
+      ['IS-8', 'Dependency graph rendering with critical path highlight', 'Computed from agent-detected dependencies + user edits'],
+      ['IS-9', 'Multi-dev Gantt schedule with blocker-aware start times', 'User controls dev count and sprint capacity'],
+      ['IS-10', 'Per-story ODC Mentor 2.0 prompt generation, regenerable, last 3 versions kept', 'Grounded in OutSystems Architect fleet findings where available'],
+      ['IS-11', 'Jira Cloud push (Epics + Stories + blocks/blocked-by links)', 'Per-project Jira config with domain/email/token/project key; pre-push verification via /myself + /project/{key}'],
+      ['IS-12', 'Re-upload with diff preview and merge/replace/skip per row', 'The approve-changes pattern familiar from Phase 7B specialist spawning'],
+      ['IS-13', 'Stakeholder approval workflow (pre-grooming epic sign-off)', 'NEW vs reference implementation'],
+      ['IS-14', 'Duplicate detection across uploads within a project', 'NEW'],
+      ['IS-15', 'Story quality scoring (clarity/completeness/testability)', 'NEW'],
+      ['IS-16', 'Inline AI refinement (chat with BA agent to iterate a story)', 'NEW'],
+      ['IS-17', 'Template library (pre-built domain templates: government, finance, healthcare, telecoms)', 'NEW'],
+      ['IS-18', 'Velocity-based delivery predictions', 'NEW — learns from past sprints where data exists'],
+      ['IS-19', 'What-if simulator (change dev count / priorities / scope → see schedule)', 'NEW'],
+      ['IS-20', 'Requirement coverage heatmap', 'NEW'],
+      ['IS-21', 'Gherkin (.feature) export', 'NEW'],
+      ['IS-22', 'Cross-project reusable epics (borrow / clone pattern)', 'NEW'],
+      ['IS-23', 'Chunked grooming for 1,000+ row uploads', 'NEW — reference implementation caps at 200 visible to the LLM'],
+      ['IS-24', 'Per-story confidence badge from agent agreement', 'NEW'],
+    ],
+    [700, 3660, 5000],
+  ),
+
+  H.h2('6.2 Out of Scope for v1.0 (Deferred to Later Releases)'),
+  H.table(
+    ['#', 'Deferred item', 'Proposed release'],
+    [
+      ['OoS-1', 'Azure DevOps push', 'v1.1'],
+      ['OoS-2', 'Linear push', 'v1.2'],
+      ['OoS-3', 'Monday.com push', 'Roadmap, unscheduled'],
+      ['OoS-4', 'ClickUp push', 'Roadmap, unscheduled'],
+      ['OoS-5', 'Real-time multi-user co-editing of stories', 'v2.0'],
+      ['OoS-6', 'Full audit log UI (view every edit with diff)', 'v1.1'],
+      ['OoS-7', 'Role-based permissions (BA can edit, PO can only review)', 'v1.1'],
+      ['OoS-8', 'Story templates as ODC-exportable schemas', 'v2.0'],
+      ['OoS-9', 'Inline commenting (threaded discussions per story)', 'v1.2'],
+      ['OoS-10', 'Mobile client (the tool is desktop-first; mobile is read-only)', 'Not planned'],
+      ['OoS-11', 'Native sub-task level below Story', 'Roadmap — requires Jira model change'],
+      ['OoS-12', 'Automated backlog import FROM Jira (reverse direction)', 'v2.0'],
+      ['OoS-13', 'Customer portal where customers directly approve/comment without email', 'v2.0'],
+      ['OoS-14', 'Voice-driven story editing', 'Not planned'],
+      ['OoS-15', 'Persistent mid-grooming pause (e.g. for week-long customer consultation)', 'v1.2 — current pipeline runs in one session'],
+    ],
+    [800, 6000, 2560],
+  ),
+
+  H.h2('6.3 Assumptions'),
+  H.bullet('Customers deliver requirements in CSV or modern Excel. PDF requirements, Word tables, and Confluence exports are not directly supported; BAs must export to CSV/Excel first.'),
+  H.bullet('Target Jira instances are Atlassian Cloud (REST v3). On-prem Jira Data Center is not supported in v1.0.'),
+  H.bullet('Target OutSystems environment is ODC; O11 (classic) is supported only for output consumption (Mentor prompts still work) but the platform itself runs on ODC.'),
+  H.bullet('Users have appropriate Jira permissions (Create Issue, Create Link, Create Epic) on the target project. The tool does not grant permissions; it respects them.'),
+  H.bullet('Requirements spreadsheets do not contain personally identifiable information (PII) outside what the customer has already authorised. NFR-SEC-2 in Section 9 defines the PII-handling floor.'),
+
+  H.h2('6.4 Dependencies (External to this Product)'),
+  H.bullet('Anthropic API access (Claude Sonnet 4.6) for drafting and enrichment. Gemini 2.0 Flash used for clustering, column detection, and vision.'),
+  H.bullet('OutSystems AI Agent infrastructure or equivalent HTTP client for LLM integration.'),
+  H.bullet('Atlassian Cloud accounts for target Jira instances; API tokens generated per user.'),
+  H.bullet('Supabase / PostgreSQL for persistence in the reference implementation; the ODC rebuild uses OutSystems platform database.'),
+];
